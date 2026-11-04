@@ -74,6 +74,7 @@ typedef struct {
   uint32_t appTimePeriod;
   int refClockSyncCycles;
   int syncToRefClock;
+  uint32_t globalShiftTime;  ///< SYNC0 offset from the nominal servo thread start (ns), applied to all DC slaves.
   char name[LCEC_CONF_STR_MAXLEN];
 } LCEC_CONF_MASTER_T;
 

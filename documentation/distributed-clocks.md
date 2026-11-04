@@ -48,10 +48,11 @@ This only affects drives that use distributed clock synchronization.
 ## Master settings
 
 The `syncToRefClock` option controls synchronization of LinuxCNC's
-servo thread time to the distributed clock time.
+servo thread time to the distributed clock time. `globalShiftTime` sets
+when SYNC0 fires within the servo thread period.
 
 ```xml
- <master idx="0" appTimePeriod="2000000" refClockSyncCycles="1000" syncToRefClock="true">
+ <master idx="0" appTimePeriod="2000000" refClockSyncCycles="1000" syncToRefClock="true" globalShiftTime="400000">
   ....
  </master>
 
@@ -65,41 +66,52 @@ are kept synchronized, "false" disables the feature. If the option is not
 specified, a negative `refClockSyncCycles` value enables this feature for
 backward compatibility.
 
+### `globalShiftTime`
+
+The master's global shift time in nanoseconds (default 0). It is the time from
+the nominal start of the servo thread period to SYNC0, and it applies
+to all DC slaves on the master. It must be less than `appTimePeriod`. This
+corresponds to the master's part of the "global shift time" in Beckhoff's
+EtherCAT documentation. A slave's own `sync0Shift` (the slave's user
+defined shift, normally 0) is added on top of it.
+
 ### SYNC0 phase relative to the servo thread
 
 lcec anchors the DC SYNC0 grid to the *nominal* start of the servo
 thread period. The first application time given to the EtherCAT master
-is the thread's nominal start time, and the EtherCAT master places SYNC0 at
-`app_start_time + n * sync0Cycle + sync0Shift`. As a result, SYNC0 fires
-at a fixed time after the nominal start of each servo thread period:
+is the thread's nominal start time plus `globalShiftTime`. The EtherCAT
+master places SYNC0 at `app_start_time + n * sync0Cycle + sync0Shift`.
+As a result, SYNC0 fires at a fixed time after the nominal start of each
+servo thread period, and that time is the same on every start:
 
 ```
-SYNC0 = thread period start + sync0Shift + transmit delay
+SYNC0 = thread period start + globalShiftTime + sync0Shift + transmit delay
 ```
 
 The transmit delay is the time from when lcec samples the
 application time in `write` until the frame reaches the reference
 slave. It is typically a few tens of microseconds and roughly constant.
 
+The absolute DC time of SYNC0 (the DC time modulo the cycle time) differs from
+start to start. Only its phase relative to the servo thread is fixed.
+
 The process data frame is sent when lcec's `write` function runs. So
-outputs reach the slaves `sync0Shift - (time from thread start to lcec write)`
-before SYNC0. Choose `sync0Shift` larger than the worst case time from
-thread start to the end of lcec's `write`, plus the slave's own
-requirement (object `0x1C32:06`, "Calc and copy time", if the slave
-provides it). `sync0Cycle` must be a multiple or a divisor of
+outputs reach the slaves `globalShiftTime - (time from thread start to lcec write)`
+before SYNC0. `sync0Cycle` must be a multiple or a divisor of
 `appTimePeriod`.
 
-To choose `sync0Shift`, run the machine under realistic load (with a GUI,
+To choose `globalShiftTime`, run the machine under realistic load (with a GUI,
 during program execution, etc.) and read `send-offset-max`. A starting point is:
 
 ```
-sync0Shift = send-offset-max + transmit delay (~20-50 us) + slave margin (0x1C32:06, or ~50 us)
+globalShiftTime = send-offset-max + transmit delay (~20-50 us) + slave margin (0x1C32:06, or ~50 us)
 ```
 
 Round it up generously. With a 1 ms period, 250-400 us is
 a reasonable range on a typical PREEMPT_RT PC. A larger value is safer but
-delays the outputs: they take effect `sync0Shift` after the start of the
-servo thread period.
+delays the outputs: they take effect `globalShiftTime` after the start of the
+servo thread period. With `globalShiftTime="0"`, SYNC0 fires at the start
+of the thread period. The outputs written in that period are then used one period later.
 
 - With `syncToRefClock="false"` the DC reference clock follows the master
   clock, so the phase is fixed from the start. `pll-err` is only calculated
@@ -126,7 +138,7 @@ Hal parameters
 
 Hal pins
 - `pll-err="<n>" OUT`. Phase error in nanoseconds between the nominal
-  start of the servo thread and the SYNC0 grid (minus `sync0Shift`), wrapped
+  start of the servo thread and the SYNC0 grid (minus `globalShiftTime` and `sync0Shift`), wrapped
   to +/- half a period. Positive means the thread starts too early.
 - `pll-out="<n>" OUT`. Current output correction, will always be +/-pll-step
   when `syncToRefClock="true"`, otherwise 0.
@@ -211,12 +223,13 @@ every 3rd cycle.  Exactly what this means depends on the hardware.
 
 ### `sync0Shift` and `sync1Shift`
 
-These shift the Sync0 and Sync1 interrupts by a fixed number of ns.
-`sync0Shift` is measured from the nominal start of the servo thread
-period. See "SYNC0 phase relative to the servo thread" above. With
-`sync0Shift="0"`, SYNC0 fires right at the start of the thread period. Process
-data from lcec's `write` then arrives almost a full period before
-SYNC0, so it is one period old when the slave uses it.
+These shift the Sync0 and Sync1 interrupts of this slave by a fixed number of ns.
+`sync0Shift` is the slave's own (user defined) shift and is added to the
+master's `globalShiftTime`. See "SYNC0 phase relative to the servo
+thread" above. It is normally 0. Use it only when a slave needs SYNC0
+earlier (negative) or later (positive) than the other slaves, for example to
+latch inputs before the frame arrives. Set the time the frame needs to
+reach the slaves with `globalShiftTime`, not with `sync0Shift`.
 
 ## Drivers and DC Clocks
 

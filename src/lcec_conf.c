@@ -287,6 +287,19 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
       p->syncToRefClock = (strcasecmp(val, "true") == 0) ? 1 : -1; // -1 = Need to know if option was given
       continue; // TODO: A general function that can handle four states: yes, no, not given, wrong. Recognize yes/on/true/1/enabled as true
     }
+
+    // parse globalShiftTime
+    if (strcmp(name, "globalShiftTime") == 0) {
+      char *end;
+      long long v = strtoll(val, &end, 10);
+      if (*val == 0 || *end != 0 || v < 0 || v > 0xffffffffLL) {
+        fprintf(stderr, "%s: ERROR: Invalid globalShiftTime \"%s\", must be a non-negative number of ns\n", modname, val);
+        XML_StopParser(inst->parser, 0);
+        return;
+      }
+      p->globalShiftTime = (uint32_t)v;
+      continue;
+    }
  
     // handle error
     fprintf(stderr, "%s: ERROR: Invalid master attribute %s\n", modname, name);
@@ -304,6 +317,13 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
     fprintf(stderr, "%s: INFO: %s servo-thread with DC reference clock\n", modname, p->syncToRefClock ? "Synchronising" : "Not synchronising");
   }
   
+  // globalShiftTime is a position within one servo thread period
+  if (p->appTimePeriod > 0 && p->globalShiftTime >= p->appTimePeriod) {
+    fprintf(stderr, "%s: ERROR: globalShiftTime (%u) must be less than appTimePeriod (%u)\n", modname, p->globalShiftTime, p->appTimePeriod);
+    XML_StopParser(inst->parser, 0);
+    return;
+  }
+
   // set default name
   if (p->name[0] == 0) {
     snprintf(p->name, LCEC_CONF_STR_MAXLEN, "%d", p->index);

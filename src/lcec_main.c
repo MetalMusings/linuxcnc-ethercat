@@ -461,6 +461,7 @@ int lcec_parse_config(void) {
         //   true: DC is clock source, servo thread syncs to DC via PLL
         // Note: legacy mode - negative refClockSyncCycles enables sync_to_ref_clock
         master->sync_to_ref_clock = master_conf->syncToRefClock;
+        master->global_shift_time = master_conf->globalShiftTime;
 
         // add master to list
         LCEC_LIST_APPEND(first_master, last_master, master);
@@ -1079,22 +1080,27 @@ static int lcec_activate_master(lcec_master_t *master) {
 
 #ifdef RTAPI_TASK_PLL_SUPPORT
   // Anchor the initial app time to the nominal start of the current servo
-  // thread period instead of "now". IgH places SYNC0 at
+  // thread period plus globalShiftTime. IgH places SYNC0 at
   //   app_start_time + n * sync0Cycle + sync0Shift
-  // (see fsm_slave_config.c), so this puts SYNC0 at a fixed offset of
-  // sync0Shift from the thread's nominal wake-up, independent of wake-up
-  // latency and of when lcec's read function happens to run.
+  // (see fsm_slave_config.c), so SYNC0 fires globalShiftTime + sync0Shift
+  // after the nominal start of each servo thread period, independent of
+  // wake-up latency and of when lcec's read function happens to run.
+  // globalShiftTime is the master's global shift; sync0Shift stays the
+  // slave's own (user defined) shift, normally 0.
+  // globalShiftTime < appTimePeriod, so the next cycle's app time (taken
+  // from "now") is still larger than this one.
   {
     long long ref = rtapi_task_pll_get_reference();
     initial_app_time = master->app_time_base + ((ref > 0) ? ref : rtapi_get_time());
   }
-  master->app_start_time = initial_app_time;
   master->app_time_last = initial_app_time;
+  initial_app_time += master->global_shift_time;
+  master->app_start_time = initial_app_time;
   master->send_offset_last = 0;
   master->dc_app_offset = 0;
   master->dc_app_offset_valid = 0;
 #else
-  initial_app_time = master->app_time_base + rtapi_get_time();
+  initial_app_time = master->app_time_base + rtapi_get_time() + master->global_shift_time;
   if (master->sync_to_ref_clock) {
     rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "unable to sync master %s cycle to reference clock, RTAPI_TASK_PLL_SUPPORT not present\n",
         master->name);
@@ -1199,10 +1205,11 @@ void lcec_read_master(void *arg, long period) {
 /// passed the reference slave.
 ///
 /// The phase error is the position of the previous cycle's nominal thread
-/// start in DC time, relative to the SYNC0 grid anchor (app_start_time),
-/// modulo appTimePeriod and wrapped to +/- half a period. When it is zero,
-/// SYNC0 fires sync0Shift ns (plus the master's transmit delay) after the
-/// nominal start of the servo thread period.
+/// start in DC time, relative to the thread grid anchor
+/// (app_start_time - globalShiftTime), modulo appTimePeriod and wrapped to
+/// +/- half a period. When it is zero, SYNC0 fires globalShiftTime +
+/// sync0Shift ns (plus the master's transmit delay) after the nominal start
+/// of the servo thread period.
 static void lcec_update_dc_phase(lcec_master_t *master, int dc_time_valid, uint32_t dc_time, uint64_t app_time, long long send_offset) {
   lcec_master_data_t *hal_data = master->hal_data;
   int64_t period = master->app_time_period;
@@ -1243,7 +1250,7 @@ static void lcec_update_dc_phase(lcec_master_t *master, int dc_time_valid, uint3
     } else {
       // DC time at the previous cycle's nominal thread start
       uint64_t dc_wake = master->app_time_last + master->dc_app_offset - master->send_offset_last;
-      int64_t phase = (int64_t)(dc_wake - master->app_start_time) % period;
+      int64_t phase = (int64_t)(dc_wake - (master->app_start_time - master->global_shift_time)) % period;
       if (phase > period / 2) {
         phase -= period;
       } else if (phase < -(period / 2)) {

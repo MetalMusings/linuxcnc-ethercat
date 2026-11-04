@@ -65,6 +65,11 @@ and some of which are required:
   enables this feature for backward compatibility.
   Enabling this feature is normally desirable when at least one slave is using
   DC synchronization.
+- `globalShiftTime="<ns>"`: (optional, default 0) time from the nominal
+  start of the servo thread period to DC SYNC0 for all slaves on this
+  master. It must be less than `appTimePeriod`. It should be larger than the time
+  until lcec's `write` has sent the frame. See
+  [distributed-clocks.md](distributed-clocks.md).
 
 Generally, for "normal" systems, this will look like 
 

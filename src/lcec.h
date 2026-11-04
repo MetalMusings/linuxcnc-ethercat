@@ -221,6 +221,7 @@ typedef struct lcec_master {
   int sync_ref_cnt;
   int sync_ref_cycles;
   int sync_to_ref_clock;
+  uint32_t global_shift_time;       ///< SYNC0 offset from the nominal servo thread start (ns).
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
