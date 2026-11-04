@@ -89,6 +89,18 @@ requirement (object `0x1C32:06`, "Calc and copy time", if the slave
 provides it). `sync0Cycle` must be a multiple or a divisor of
 `appTimePeriod`.
 
+To choose `sync0Shift`, run the machine under realistic load (with a GUI,
+during program execution, etc.) and read `send-offset-max`. A starting point is:
+
+```
+sync0Shift = send-offset-max + transmit delay (~20-50 us) + slave margin (0x1C32:06, or ~50 us)
+```
+
+Round it up generously. With a 1 ms period, 250-400 us is
+a reasonable range on a typical PREEMPT_RT PC. A larger value is safer but
+delays the outputs: they take effect `sync0Shift` after the start of the
+servo thread period.
+
 - With `syncToRefClock="false"` the DC reference clock follows the master
   clock, so the phase is fixed from the start. `pll-err` is only calculated
   for monitoring.
@@ -98,8 +110,8 @@ provides it). `sync0Cycle` must be a multiple or a divisor of
   errors are pulled in at `pll-step` per cycle. With the default settings,
   that is at most about 500 cycles.
 
-Synchronization is done with a bang-bang controller. Three hal parameters
-and four hal pins are available.
+Synchronization is done with a bang-bang controller. Four hal parameters
+and five hal pins are available.
 
 Hal parameters
 - `pll-step="<n>" RW`. The adjustment step in nanoseconds. Default 0.1% of appTimePeriod.
@@ -109,6 +121,8 @@ Hal parameters
   time offsets during start-up) are counted in `pll-reset-count`, and
   that cycle is not used for control. Default one appTimePeriod.
 - `dc-phase-max-err="<n>" RW`. Limit for `dc-phased`. Default 10% of appTimePeriod.
+- `send-offset-max="<n>" RW`. Largest `send-offset` seen while cyclic
+  communication is running. Set to 0 to reset.
 
 Hal pins
 - `pll-err="<n>" OUT`. Phase error in nanoseconds between the nominal
@@ -119,6 +133,9 @@ Hal pins
 - `pll-reset-count="<n>" OUT`. Number of times the DC time has jumped by
   more than `pll-max-err`.
 - `dc-phased` OUT. True when `|pll-err| < dc-phase-max-err`.
+- `send-offset="<n>" OUT`. Time in nanoseconds from the nominal start of the
+  servo thread period to when lcec samples the application time, just
+  before sending the frame.
 
 `pll-err` varies up and down. `pll-reset-count` should only increase during
 start-up. If `pll-err` never settles, the difference in speed between

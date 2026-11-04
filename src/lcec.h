@@ -187,6 +187,8 @@ typedef struct lcec_master_data {
   hal_u32_t *pll_reset_cnt;
   hal_u32_t dc_phase_max_err;
   hal_bit_t *dc_phased;            // DC phase synchronization status
+  hal_s32_t *send_offset;          ///< Time from nominal thread start to the app time sample before sending (ns).
+  hal_s32_t send_offset_max;        ///< Max of send_offset while DC is running; write 0 to reset.
 #endif
 } lcec_master_data_t;
 

@@ -53,6 +53,7 @@ static const lcec_pindesc_t master_pins[] = {
     {HAL_S32, HAL_OUT, offsetof(lcec_master_data_t, pll_out), "%s.pll-out"},
     {HAL_U32, HAL_OUT, offsetof(lcec_master_data_t, pll_reset_cnt), "%s.pll-reset-count"},
     {HAL_BIT, HAL_OUT, offsetof(lcec_master_data_t, dc_phased), "%s.dc-phased"},
+    {HAL_S32, HAL_OUT, offsetof(lcec_master_data_t, send_offset), "%s.send-offset"},
 #endif
     {HAL_TYPE_UNSPECIFIED, HAL_DIR_UNSPECIFIED, -1, NULL},
 };
@@ -63,6 +64,7 @@ static const lcec_paramdesc_t master_params[] = {
     {HAL_U32, HAL_RW, offsetof(lcec_master_data_t, pll_step), "%s.pll-step"},
     {HAL_U32, HAL_RW, offsetof(lcec_master_data_t, pll_max_err), "%s.pll-max-err"},
     {HAL_U32, HAL_RW, offsetof(lcec_master_data_t, dc_phase_max_err), "%s.dc-phase-max-err"},
+    {HAL_S32, HAL_RW, offsetof(lcec_master_data_t, send_offset_max), "%s.send-offset-max"},
 #endif
     {HAL_TYPE_UNSPECIFIED},
 };
@@ -1210,9 +1212,15 @@ static void lcec_update_dc_phase(lcec_master_t *master, int dc_time_valid, uint3
   *(hal_data->pll_err) = 0;
   *(hal_data->pll_out) = 0;
   *(hal_data->dc_phased) = 0;
+  *(hal_data->send_offset) = (int32_t)send_offset;
 
   // the first read dc_time value seems to be invalid, so wait for two successive successful reads
   if (dc_time_valid && master->dc_time_valid_last && period > 0) {
+    // cyclic communication is running; ignore the slow start-up cycles for the max value
+    if (*(hal_data->send_offset) > hal_data->send_offset_max) {
+      hal_data->send_offset_max = *(hal_data->send_offset);
+    }
+
     // Track the 64-bit offset between DC time and app time by unwrapping the
     // 32-bit DC time. The offset drifts slowly (syncToRefClock=true) or stays
     // nearly constant (syncToRefClock=false), so the per-cycle change always
