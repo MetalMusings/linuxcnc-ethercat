@@ -223,8 +223,11 @@ typedef struct lcec_master {
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
 #ifdef RTAPI_TASK_PLL_SUPPORT
-  uint64_t dc_ref_time;          // DC reference time (epoch) - set on first app_time call
-  uint32_t app_time_last;
+  uint64_t app_start_time;          ///< First app time given to IgH; it anchors the SYNC0 grid (start = app_start_time + n*cycle + shift).
+  uint64_t app_time_last;           ///< App time used for the previous cycle's frame.
+  long long send_offset_last;       ///< Previous cycle: time from nominal thread start to the app time sample (ns).
+  int64_t dc_app_offset;            ///< Unwrapped 64-bit offset between DC reference clock time and app time.
+  int dc_app_offset_valid;          ///< dc_app_offset has been initialized.
   int dc_time_valid_last;
 #endif
 } lcec_master_t;

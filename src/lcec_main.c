@@ -227,6 +227,14 @@ int rtapi_app_main(void) {
             LCEC_MSG_PFX "configuring DC for slave %s.%s: assignActivate=x%x sync0Cycle=%d sync0Shift=%d sync1Cycle=%d sync1Shift=%d\n",
             master->name, slave->name, slave->dc_conf->assignActivate, slave->dc_conf->sync0Cycle, slave->dc_conf->sync0Shift,
             slave->dc_conf->sync1Cycle, slave->dc_conf->sync1Shift);
+        // SYNC0 can only keep a fixed phase to the servo thread if one period is a multiple of the other
+        if (slave->dc_conf->sync0Cycle > 0 && master->app_time_period > 0 &&
+            (slave->dc_conf->sync0Cycle % master->app_time_period) != 0 &&
+            (master->app_time_period % slave->dc_conf->sync0Cycle) != 0) {
+          rtapi_print_msg(RTAPI_MSG_WARN,
+              LCEC_MSG_PFX "slave %s.%s: sync0Cycle=%u is not a multiple or divisor of appTimePeriod=%u, SYNC0 phase to the servo thread will drift\n",
+              master->name, slave->name, slave->dc_conf->sync0Cycle, master->app_time_period);
+        }
       }
 
       // Configure the slave's watchdog times.
@@ -1066,22 +1074,34 @@ static int lcec_activate_master(lcec_master_t *master) {
 
   // Always use simple wall-clock time formula
   master->app_time_base -= rtapi_get_time();
-  initial_app_time = master->app_time_base + rtapi_get_time();
 
 #ifdef RTAPI_TASK_PLL_SUPPORT
+  // Anchor the initial app time to the nominal start of the current servo
+  // thread period instead of "now". IgH places SYNC0 at
+  //   app_start_time + n * sync0Cycle + sync0Shift
+  // (see fsm_slave_config.c), so this puts SYNC0 at a fixed offset of
+  // sync0Shift from the thread's nominal wake-up, independent of wake-up
+  // latency and of when lcec's read function happens to run.
+  {
+    long long ref = rtapi_task_pll_get_reference();
+    initial_app_time = master->app_time_base + ((ref > 0) ? ref : rtapi_get_time());
+  }
+  master->app_start_time = initial_app_time;
+  master->app_time_last = initial_app_time;
+  master->send_offset_last = 0;
+  master->dc_app_offset = 0;
+  master->dc_app_offset_valid = 0;
 #else
+  initial_app_time = master->app_time_base + rtapi_get_time();
   if (master->sync_to_ref_clock) {
     rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "unable to sync master %s cycle to reference clock, RTAPI_TASK_PLL_SUPPORT not present\n",
         master->name);
   }
 #endif
 
-  // Set application time BEFORE activate
-  // This sets dc_ref_time in the kernel, which is needed for DC SYNC0 phase calculation
+  // Set application time BEFORE activate. The first call sets app_start_time
+  // in IgH, which is the anchor for the DC SYNC0 phase calculation.
   ecrt_master_application_time(master->master, initial_app_time);
-#ifdef RTAPI_TASK_PLL_SUPPORT
-  master->dc_ref_time = initial_app_time;  // Record the same value we sent to kernel
-#endif
   rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "Initial app_time set to %llu\n", (unsigned long long)initial_app_time);
 
   // Activate master
@@ -1169,6 +1189,89 @@ void lcec_read_master(void *arg, long period) {
   }
 }
 
+#ifdef RTAPI_TASK_PLL_SUPPORT
+/// @brief Update the PLL / DC phase state of a master.
+///
+/// Called after the frame has been sent. `dc_time` is the (lower 32 bits of
+/// the) DC reference clock time sampled when the *previous* cycle's frame
+/// passed the reference slave.
+///
+/// The phase error is the position of the previous cycle's nominal thread
+/// start in DC time, relative to the SYNC0 grid anchor (app_start_time),
+/// modulo appTimePeriod and wrapped to +/- half a period. When it is zero,
+/// SYNC0 fires sync0Shift ns (plus the master's transmit delay) after the
+/// nominal start of the servo thread period.
+static void lcec_update_dc_phase(lcec_master_t *master, int dc_time_valid, uint32_t dc_time, uint64_t app_time, long long send_offset) {
+  lcec_master_data_t *hal_data = master->hal_data;
+  int64_t period = master->app_time_period;
+  int32_t step;
+  int phase_valid = 0;
+
+  *(hal_data->pll_err) = 0;
+  *(hal_data->pll_out) = 0;
+  *(hal_data->dc_phased) = 0;
+
+  // the first read dc_time value seems to be invalid, so wait for two successive successful reads
+  if (dc_time_valid && master->dc_time_valid_last && period > 0) {
+    // Track the 64-bit offset between DC time and app time by unwrapping the
+    // 32-bit DC time. The offset drifts slowly (syncToRefClock=true) or stays
+    // nearly constant (syncToRefClock=false), so the per-cycle change always
+    // fits in 32 bits. This also makes the initial garbage offset (before IgH
+    // has written the slaves' system time offsets) disappear on its own.
+    int32_t delta;
+    if (!master->dc_app_offset_valid) {
+      master->dc_app_offset = (int32_t)(dc_time - (uint32_t)master->app_time_last);
+      master->dc_app_offset_valid = 1;
+      delta = 0;
+    } else {
+      delta = (int32_t)(dc_time - (uint32_t)(master->app_time_last + master->dc_app_offset));
+      master->dc_app_offset += delta;
+    }
+
+    if ((uint32_t)abs(delta) > hal_data->pll_max_err) {
+      // DC time jumped (e.g. IgH wrote the system time offset). The offset
+      // has been tracked, but skip control this cycle and document the event.
+      (*(hal_data->pll_reset_cnt))++;
+    } else {
+      // DC time at the previous cycle's nominal thread start
+      uint64_t dc_wake = master->app_time_last + master->dc_app_offset - master->send_offset_last;
+      int64_t phase = (int64_t)(dc_wake - master->app_start_time) % period;
+      if (phase > period / 2) {
+        phase -= period;
+      } else if (phase < -(period / 2)) {
+        phase += period;
+      }
+      // positive error: thread starts too early relative to SYNC0, lengthen period
+      *(hal_data->pll_err) = (int32_t)(-phase);
+      phase_valid = 1;
+    }
+
+    if (phase_valid && (uint32_t)abs(*(hal_data->pll_err)) < hal_data->dc_phase_max_err) {
+      *(hal_data->dc_phased) = 1;
+    }
+
+    // syncToRefClock=true: DC is the clock source; steer the servo thread so
+    // that its nominal start keeps a fixed phase to SYNC0.
+    // syncToRefClock=false: the DC follows the master clock and SYNC0 is
+    // already anchored to the thread grid via app_start_time; pll_err is
+    // only calculated for monitoring.
+    if (master->sync_to_ref_clock && phase_valid) {
+      step = (int32_t)hal_data->pll_step;
+      *(hal_data->pll_out) = (*(hal_data->pll_err) < 0) ? -step : step;
+    }
+  }
+
+  // Only masters that steer the thread touch the thread's PLL correction, so
+  // that a non-synchronizing master doesn't cancel another master's correction.
+  if (master->sync_to_ref_clock) {
+    rtapi_task_pll_set_correction(*(hal_data->pll_out));
+  }
+  master->app_time_last = app_time;
+  master->send_offset_last = send_offset;
+  master->dc_time_valid_last = dc_time_valid;
+}
+#endif
+
 /// @brief Write all output pins on a master and its slaves.
 void lcec_write_master(void *arg, long period) {
   lcec_master_t *master = (lcec_master_t *)arg;
@@ -1176,9 +1279,9 @@ void lcec_write_master(void *arg, long period) {
   uint64_t app_time;
   long long now;
 #ifdef RTAPI_TASK_PLL_SUPPORT
+  long long ref;
   uint32_t dc_time;
   int dc_time_valid;
-  lcec_master_data_t *hal_data;
 #endif
 
   // Skip if master not yet activated (should have been activated in read)
@@ -1193,19 +1296,18 @@ void lcec_write_master(void *arg, long period) {
     }
   }
 
+#ifdef RTAPI_TASK_PLL_SUPPORT
+  // nominal start time of the current servo thread period
+  ref = rtapi_task_pll_get_reference();
+#endif
+
   // send process data
   rtapi_mutex_get(&master->mutex);
   ecrt_domain_queue(master->domain);
 
   // update application time
   now = rtapi_get_time();
-#ifdef RTAPI_TASK_PLL_SUPPORT
-  // Use simple wall-clock time for app_time in both modes
-  // Phase synchronization is handled by PLL corrections to servo thread timing
   app_time = master->app_time_base + now;
-#else
-  app_time = master->app_time_base + now;
-#endif
 
   ecrt_master_application_time(master->master, app_time);
 
@@ -1232,53 +1334,8 @@ void lcec_write_master(void *arg, long period) {
   rtapi_mutex_give(&master->mutex);
 
 #ifdef RTAPI_TASK_PLL_SUPPORT
-  // BANG-BANG controller for master thread PLL sync
-  // this part is done after ecrt_master_send() to reduce jitter
-  hal_data = master->hal_data;
-  *(hal_data->pll_err) = 0;
-  *(hal_data->pll_out) = 0;
-  *(hal_data->dc_phased) = 0;
-
-  // the first read dc_time value seems to be invalid, so wait for two successive successful reads
-  if (dc_time_valid && master->dc_time_valid_last) {
-    // Raw offset between app_time and dc_time (this is what varies at each startup)
-    int32_t raw_offset = master->app_time_last - dc_time;
-
-    // Apply automatic drift compensation: (period - app_phase) % period
-    // Calculate app_phase: our execution position in local cycle relative to dc_ref_time
-    int32_t period = (int32_t)master->app_time_period;
-    int32_t app_phase = (int32_t)((app_time - master->dc_ref_time) % master->app_time_period);
-    int32_t drift = (period - app_phase) % period;
-    if (drift < 0) drift += period;
-
-    *(hal_data->pll_err) = raw_offset + drift;
-
-    // DC is considered phased if error is within dc_phase_max_err tolerance
-    // This works regardless of sync_to_ref_clock mode
-    if (abs(*(hal_data->pll_err)) < hal_data->dc_phase_max_err) {
-      *(hal_data->dc_phased) = 1;
-    }
-    
-    // Only run automatic PLL adjustment when sync_to_ref_clock is enabled
-    // When sync_to_ref_clock = false, master is the clock source, DC syncs to us
-    // When sync_to_ref_clock = true, DC is the clock source, we sync to DC
-    if (master->sync_to_ref_clock) {
-      // check for invalid error values
-      if (abs(*(hal_data->pll_err)) > hal_data->pll_max_err) {
-        // Error too large - skip next control cycle to allow resync
-        dc_time_valid = 0;
-        // increment reset counter to document this event
-        (*(hal_data->pll_reset_cnt))++;
-      } else {
-        *(hal_data->pll_out) = (*(hal_data->pll_err) < 0) ? -(hal_data->pll_step) : (hal_data->pll_step);
-      }
-    }
-    // When sync_to_ref_clock = false: pll_out stays 0, but pll_err is still calculated for monitoring
-  }
-
-  rtapi_task_pll_set_correction(*(hal_data->pll_out));
-  master->app_time_last = (uint32_t)app_time;
-  master->dc_time_valid_last = dc_time_valid;
+  // done after ecrt_master_send() to reduce jitter
+  lcec_update_dc_phase(master, dc_time_valid, dc_time, app_time, (ref > 0) ? (now - ref) : 0);
 #endif
 }
 

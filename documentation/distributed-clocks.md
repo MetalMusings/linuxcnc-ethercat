@@ -65,23 +65,63 @@ are kept synchronized, "false" disables the feature. If the option is not
 specified, a negative `refClockSyncCycles` value enables this feature for
 backward compatibility.
 
-Synchronization is done with a bang-bang controller. Two hal parameters
-and three hal pins are available.
+### SYNC0 phase relative to the servo thread
+
+lcec anchors the DC SYNC0 grid to the *nominal* start of the servo
+thread period. The first application time given to the EtherCAT master
+is the thread's nominal start time, and the EtherCAT master places SYNC0 at
+`app_start_time + n * sync0Cycle + sync0Shift`. As a result, SYNC0 fires
+at a fixed time after the nominal start of each servo thread period:
+
+```
+SYNC0 = thread period start + sync0Shift + transmit delay
+```
+
+The transmit delay is the time from when lcec samples the
+application time in `write` until the frame reaches the reference
+slave. It is typically a few tens of microseconds and roughly constant.
+
+The process data frame is sent when lcec's `write` function runs. So
+outputs reach the slaves `sync0Shift - (time from thread start to lcec write)`
+before SYNC0. Choose `sync0Shift` larger than the worst case time from
+thread start to the end of lcec's `write`, plus the slave's own
+requirement (object `0x1C32:06`, "Calc and copy time", if the slave
+provides it). `sync0Cycle` must be a multiple or a divisor of
+`appTimePeriod`.
+
+- With `syncToRefClock="false"` the DC reference clock follows the master
+  clock, so the phase is fixed from the start. `pll-err` is only calculated
+  for monitoring.
+- With `syncToRefClock="true"` the DC reference clock is the time source, and
+  the servo thread period is adjusted (+/- `pll-step` per cycle) so that
+  its nominal start keeps the phase described above. Large initial phase
+  errors are pulled in at `pll-step` per cycle. With the default settings,
+  that is at most about 500 cycles.
+
+Synchronization is done with a bang-bang controller. Three hal parameters
+and four hal pins are available.
 
 Hal parameters
 - `pll-step="<n>" RW`. The adjustment step in nanoseconds. Default 0.1% of appTimePeriod.
-- `pll-max-error="<n>" RW`. Max allowed time difference between the servo thread and
-  the reference clock in nanoseconds before a reset. Default one appTimePeriod.
+- `pll-max-err="<n>" RW`. Max allowed change per cycle of the offset
+  between the DC reference clock and the master clock in nanoseconds.
+  Larger changes (for example when the master writes the slaves' system
+  time offsets during start-up) are counted in `pll-reset-count`, and
+  that cycle is not used for control. Default one appTimePeriod.
+- `dc-phase-max-err="<n>" RW`. Limit for `dc-phased`. Default 10% of appTimePeriod.
 
 Hal pins
-- `pll-err="<n>" OUT`. The current time difference between the servo thread
-  and the reference clock in nanoseconds.
-- `pll-out="<n>" OUT`. Current output correction, will always be +/-pll-step.
-- `pll-reset-count="<n>" OUT`. Number of times pll-err has been larger
-  than pll-max-error.
+- `pll-err="<n>" OUT`. Phase error in nanoseconds between the nominal
+  start of the servo thread and the SYNC0 grid (minus `sync0Shift`), wrapped
+  to +/- half a period. Positive means the thread starts too early.
+- `pll-out="<n>" OUT`. Current output correction, will always be +/-pll-step
+  when `syncToRefClock="true"`, otherwise 0.
+- `pll-reset-count="<n>" OUT`. Number of times the DC time has jumped by
+  more than `pll-max-err`.
+- `dc-phased` OUT. True when `|pll-err| < dc-phase-max-err`.
 
-`pll-err` varies up and down. `pll-reset-count`should be kept low.
-If `pll-reset-count` increases, the difference in speed between
+`pll-err` varies up and down. `pll-reset-count` should only increase during
+start-up. If `pll-err` never settles, the difference in speed between
 the clocks is large. Increasing `pll-step` might help. `pll-step` is limited
 to 1% of appTimePeriod.
 
@@ -155,9 +195,11 @@ every 3rd cycle.  Exactly what this means depends on the hardware.
 ### `sync0Shift` and `sync1Shift`
 
 These shift the Sync0 and Sync1 interrupts by a fixed number of ns.
-Presumably shifting various devices slightly could result in reduced
-jitter and less contention on the network, although it's not clear
-that it really matters to us.  Many examples seem to just use 0.
+`sync0Shift` is measured from the nominal start of the servo thread
+period. See "SYNC0 phase relative to the servo thread" above. With
+`sync0Shift="0"`, SYNC0 fires right at the start of the thread period. Process
+data from lcec's `write` then arrives almost a full period before
+SYNC0, so it is one period old when the slave uses it.
 
 ## Drivers and DC Clocks
 
