@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <expat.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -440,6 +441,19 @@ static void parseSlaveAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **a
   state->currSlave = p;
 }
 
+// Parse a signed shift time in ns (sync0Shift, sync1Shift). The whole
+// string must be a number in the int32 range. Returns 0 on success.
+static int parseShiftTime(const char *name, const char *val, int32_t *out) {
+  char *end;
+  long long v = strtoll(val, &end, 10);
+  if (*val == 0 || *end != 0 || v < INT32_MIN || v > INT32_MAX) {
+    fprintf(stderr, "%s: ERROR: Invalid %s \"%s\", must be a whole number of ns\n", modname, name, val);
+    return -1;
+  }
+  *out = (int32_t)v;
+  return 0;
+}
+
 static void parseDcConfAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **attr) {
   LCEC_CONF_XML_STATE_T *state = (LCEC_CONF_XML_STATE_T *)inst;
 
@@ -468,7 +482,10 @@ static void parseDcConfAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
 
     // parse sync0Shift
     if (strcmp(name, "sync0Shift") == 0) {
-      p->sync0Shift = atoi(val);
+      if (parseShiftTime(name, val, &p->sync0Shift) != 0) {
+        XML_StopParser(inst->parser, 0);
+        return;
+      }
       continue;
     }
 
@@ -480,7 +497,10 @@ static void parseDcConfAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
 
     // parse sync1Shift
     if (strcmp(name, "sync1Shift") == 0) {
-      p->sync1Shift = atoi(val);
+      if (parseShiftTime(name, val, &p->sync1Shift) != 0) {
+        XML_StopParser(inst->parser, 0);
+        return;
+      }
       continue;
     }
 

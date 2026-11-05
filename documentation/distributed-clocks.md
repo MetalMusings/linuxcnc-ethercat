@@ -72,8 +72,10 @@ The master's global shift time in nanoseconds (default 0). It is the time from
 the nominal start of the servo thread period to SYNC0, and it applies
 to all DC slaves on the master. It must be less than `appTimePeriod`. This
 corresponds to the master's part of the "global shift time" in Beckhoff's
-EtherCAT documentation. A slave's own `sync0Shift` (the slave's user
-defined shift, normally 0) is added on top of it.
+EtherCAT documentation, and to the shift of the master's local timer
+against the DC Base Time in ETG.1020, 20.2.2. A slave's own `sync0Shift`
+(the slave's user defined shift, normally 0) is added on top of it. See
+"Shift times in the EtherCAT standards" below.
 
 ### SYNC0 phase relative to the servo thread
 
@@ -223,13 +225,69 @@ every 3rd cycle.  Exactly what this means depends on the hardware.
 
 ### `sync0Shift` and `sync1Shift`
 
-These shift the Sync0 and Sync1 interrupts of this slave by a fixed number of ns.
-`sync0Shift` is the slave's own (user defined) shift and is added to the
+`sync0Shift` shifts the SYNC0 signal of this one slave by a fixed number
+of ns. It is the slave's own (user defined) shift and is added to the
 master's `globalShiftTime`. See "SYNC0 phase relative to the servo
 thread" above. It is normally 0. Use it only when a slave needs SYNC0
 earlier (negative) or later (positive) than the other slaves, for example to
 latch inputs before the frame arrives. Set the time the frame needs to
 reach the slaves with `globalShiftTime`, not with `sync0Shift`.
+
+Both values must be whole numbers of ns. lcec stops with an error on
+anything else. At start-up lcec logs (at INFO level) where SYNC0 fires for
+each slave with SYNC0 activated:
+
+```
+SYNC0 at globalShiftTime + sync0Shift = 300000 + 0 = 300000 ns after the servo period start
+```
+
+It warns if `globalShiftTime + sync0Shift` is negative or not less than
+`sync0Cycle`. SYNC0 then still works, but falls in another cycle than
+intended. This usually means that the same shift has been given in both
+`globalShiftTime` and `sync0Shift`.
+
+`sync1Shift` is passed to the EtherCAT master, but the IgH master used
+here only stores it. It writes `sync1Cycle` unchanged to register
+0x09A4 and does not use `sync1Shift` anywhere.
+
+### Shift times in the EtherCAT standards
+
+The EtherCAT documents use the word "shift" for three different things.
+Only the first two are configured with `globalShiftTime` and `sync0Shift`.
+
+| What | Standard | In lcec |
+|------|----------|---------|
+| The master's shift: application time, frame time, frame delay and user shift, the same for all slaves | ETG.1020, 20.2.2 "DC Mode, Master follows Reference Clock" | `globalShiftTime` |
+| A slave's SYNC0 shift: offset of the SYNC0 start time (register 0x0990) relative to the global DC reference | ETG.2000, `Dc:OpMode:ShiftTimeSync0` (Table 48, attributes in Table 50) | `sync0Shift` |
+| The slave's internal Shift Time: delay from SYNC0 to Outputs Valid or Input Latch, done by the slave's firmware | ETG.1020, 20.1.1.2.7 "Shift Time" and 20.1.1.5.1.2 "Shift of Outputs Valid and/or Input Latch", objects 0x1C32:03 and 0x1C33:03 | not set by lcec |
+
+ETG.1020 20.2.2 says that "the Sync0 event of each slave may be shifted
+to the DC Base Time by writing the Start Time of the cyclic Operation
+(Register 0x990-0x993)". This is what `sync0Shift` does. `sync0Shift`
+is **not** written to 0x1C32:03 or 0x1C33:03. If a slave supports a
+writable Shift Time (see 0x1C32:04 bits 5-6), set it with `<sdoConfig>`
+like any other SDO.
+
+lcec does not read ESI files when it runs. The following parts of
+`Dc:OpMode` in ETG.2000 (Table 48 and Table 50) are therefore not used,
+and the values must be entered in `<dcConf>` by hand:
+
+- `CycleTimeSync0`, `ShiftTimeSync0` and their `Factor` attributes.
+- `ShiftTimeSync0@Input` (and `ShiftTimeSync1@Input`) is **not supported**.
+  With `Input="1"` a configuration tool such as TwinCAT ("Based on input
+  reference") moves SYNC0 of an input slave to shortly before the frame
+  that collects the inputs, so that the slave has measured and copied its
+  inputs to SyncManager 3 when the frame passes. lcec places SYNC0 of all
+  slaves at `globalShiftTime + sync0Shift`. To latch the inputs of a slave
+  earlier, give it a negative `sync0Shift`.
+- `OutputDelayTime` and `InputDelayTime` (0x1C32:09 and 0x1C33:09).
+  lcec does not use them to align the slaves' Outputs Valid as described in
+  ETG.1020 20.2.2, Table 83.
+
+References: ETG.1020 Protocol Enhancements, V1.2.0, chapter 20
+"Synchronization". ETG.2000 EtherCAT Slave Information Specification,
+V1.0.6, `DeviceType:Dc`. Both are available from
+<https://www.ethercat.org/>.
 
 ## Drivers and DC Clocks
 

@@ -237,6 +237,21 @@ int rtapi_app_main(void) {
               LCEC_MSG_PFX "slave %s.%s: sync0Cycle=%u is not a multiple or divisor of appTimePeriod=%u, SYNC0 phase to the servo thread will drift\n",
               master->name, slave->name, slave->dc_conf->sync0Cycle, master->app_time_period);
         }
+        // Where SYNC0 fires in the servo thread period (only if SYNC0 is activated, 0x0981 bit 1).
+        // The master's globalShiftTime is in app_start_time, and the EtherCAT master adds this
+        // slave's sync0Shift to the start time in 0x0990 (see documentation/distributed-clocks.md).
+        if ((slave->dc_conf->assignActivate & 0x0200) != 0) {
+          long long sync0_pos = (long long)master->global_shift_time + slave->dc_conf->sync0Shift;
+          rtapi_print_msg(RTAPI_MSG_INFO,
+              LCEC_MSG_PFX "slave %s.%s: SYNC0 at globalShiftTime + sync0Shift = %u + %d = %lld ns after the servo period start\n",
+              master->name, slave->name, master->global_shift_time, slave->dc_conf->sync0Shift, sync0_pos);
+          if (slave->dc_conf->sync0Cycle > 0 && (sync0_pos < 0 || sync0_pos >= (long long)slave->dc_conf->sync0Cycle)) {
+            rtapi_print_msg(RTAPI_MSG_WARN,
+                LCEC_MSG_PFX "slave %s.%s: globalShiftTime + sync0Shift = %lld ns is outside 0..sync0Cycle (%u ns), SYNC0 falls in another "
+                             "cycle. Is the same shift given in both globalShiftTime and sync0Shift?\n",
+                master->name, slave->name, sync0_pos, slave->dc_conf->sync0Cycle);
+          }
+        }
       }
 
       // Configure the slave's watchdog times.
