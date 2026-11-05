@@ -29,6 +29,16 @@ extern "C" {
 #include "ecrt.h"
 #include "hal.h"
 #include "lcec_conf.h"
+
+/// HAL component name. halcmd requires it to match the module file name, so the
+/// build against the userspace EtherCAT master (lcec_uspace.so) registers as
+/// "lcec_uspace". Pins and functions keep the LCEC_MODULE_NAME prefix ("lcec"),
+/// so HAL files only change "loadrt lcec" to "loadrt lcec_uspace".
+#ifdef EC_USPACE_MASTER
+#define LCEC_COMP_NAME "lcec_uspace"
+#else
+#define LCEC_COMP_NAME LCEC_MODULE_NAME
+#endif
 #include "lcec_rtapi.h"
 #include "rtapi_ctype.h"
 #include "rtapi_math.h"
@@ -206,6 +216,7 @@ typedef struct lcec_master {
   lcec_master_t *next;              ///< Previous master.
   int index;                        ///< Index of this mater.
   char name[LCEC_CONF_STR_MAXLEN];  ///< Name of master.
+  char interface[LCEC_CONF_STR_MAXLEN];  ///< Network interface for the userspace master; empty if not given.
   ec_master_t *master;              ///< EtherCAT master structure.
   unsigned long mutex;              ///< Mutex for locking operations.
   ec_pdo_entry_reg_t *pdo_entry_regs;
@@ -225,6 +236,8 @@ typedef struct lcec_master {
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
+  int activate_requested;           ///< Userspace master: the servo thread has handed activation to the helper thread.
+  void *activator;                  ///< Userspace master: helper thread that runs ecrt_master_activate() outside the servo thread.
 #ifdef RTAPI_TASK_PLL_SUPPORT
   uint64_t app_start_time;          ///< First app time given to IgH; it anchors the SYNC0 grid (start = app_start_time + n*cycle + shift).
   uint64_t app_time_last;           ///< App time used for the previous cycle's frame.

@@ -271,6 +271,13 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
       continue;
     }
 
+    // parse interface (only used by lcec_uspace, the build against the userspace master)
+    if (strcmp(name, "interface") == 0) {
+      strncpy(p->interface, val, LCEC_CONF_STR_MAXLEN);
+      p->interface[LCEC_CONF_STR_MAXLEN - 1] = 0;
+      continue;
+    }
+
     // parse appTimePeriod
     if (strcmp(name, "appTimePeriod") == 0) {
       p->appTimePeriod = atol(val);

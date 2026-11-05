@@ -76,6 +76,7 @@ typedef struct {
   int syncToRefClock;
   uint32_t globalShiftTime;  ///< SYNC0 offset from the nominal servo thread start (ns), applied to all DC slaves.
   char name[LCEC_CONF_STR_MAXLEN];
+  char interface[LCEC_CONF_STR_MAXLEN];  ///< Network interface for the userspace master (lcec_uspace); empty if not given.
 } LCEC_CONF_MASTER_T;
 
 typedef struct {

@@ -81,6 +81,38 @@ package manager, then first you'll need to make sure that you have the
 LinuxCNC (with its development tools) installed.  Then download
 linuxcnc-ethercat and run `make install`.
 
+### Userspace EtherCAT master (lcec_uspace)
+
+`make install` can also build `lcec_uspace.so`, the same driver built
+against a userspace build of the IgH master
+([stratuMAK/ethercat](https://github.com/stratuMAK/ethercat)). There
+the whole master runs as a library inside LinuxCNC's `rtapi_app`, with
+no kernel module and no `ethercat` service. Install that master in a
+prefix of its own, so that its `ecrt.h` does not replace the kernel
+master's:
+
+```
+./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
+make && sudo make install
+```
+
+`lcec_uspace.so` is built whenever `/opt/ethercat-uspace/include/ecrt.h`
+exists (set `USPACE_ETHERCAT` for another prefix). To use it:
+
+- load it with `loadrt lcec_uspace` instead of `loadrt lcec`. Pins and
+  functions keep their `lcec.` names, so the rest of the HAL file is
+  unchanged.
+- give the network interface on the master in the XML file:
+  `<master idx="0" interface="enp2s0" ...>` (or in the environment
+  variable `LCEC_ETHERCAT_INTERFACE`). Only master 0 is supported.
+- stop the kernel master first (`sudo systemctl stop ethercat`): both
+  cannot use the same network interface.
+
+The master exists only while LinuxCNC runs, so the `ethercat` tool cannot
+reach it, and SDOs that were written with `ethercat download` before
+starting LinuxCNC belong in `<sdoConfig>` in the XML file. On exit, the
+slaves are taken back to PREOP.
+
 
 ## Configuring
 

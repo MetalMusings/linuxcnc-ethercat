@@ -58,6 +58,46 @@ liblcecdevices.a: $(device-objs)
 	@$(ECHO) Creating library $@
 	@$(Q)ar rcs liblcecdevices.a $(device-objs)
 
+## lcec_uspace.so: lcec built against the userspace EtherCAT master
+#
+# The userspace master is a build of the IgH master as a library, without a
+# kernel module (https://github.com/stratuMAK/ethercat, configured with
+# --enable-uspace-master). Install it in a prefix of its own, so that its ecrt.h
+# does not shadow the kernel master's /usr/include/ecrt.h:
+#   ./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
+# lcec_uspace.so is built and installed next to lcec.so when that prefix has
+# ecrt.h. The same sources are compiled a second time, as *.uspace.o, against
+# that ecrt.h; the userspace code paths are under #ifdef EC_USPACE_MASTER.
+USPACE_ETHERCAT ?= /opt/ethercat-uspace
+ifneq ($(wildcard $(USPACE_ETHERCAT)/include/ecrt.h),)
+  BUILD_USPACE := yes
+endif
+
+uspace-objs := $(lcec-objs:.o=.uspace.o)
+uspace-device-objs := $(device-objs:.o=.uspace.o)
+
+# -I comes after EXTRA_CFLAGS, but before the system /usr/include/ecrt.h.
+# EXTRA_CFLAGS cannot carry it: Makefile.modinc assigns it with :=.
+%.uspace.o: %.c
+	@$(ECHO) Compiling realtime $< for lcec_uspace
+	@$(Q)$(CC) -o $@ $(EXTRA_CFLAGS) -I$(USPACE_ETHERCAT)/include -MMD -MP -c $<
+
+-include $(uspace-objs:.o=.d) $(uspace-device-objs:.o=.d)
+
+liblcecdevices_uspace.a: $(uspace-device-objs)
+	@$(ECHO) Creating library $@
+	@$(Q)ar rcs $@ $(uspace-device-objs)
+
+lcec_uspace.so: $(uspace-objs) liblcecdevices_uspace.a
+	$(ECHO) Linking $@
+	ld -d -r -o $@.tmp $(uspace-objs)
+	objcopy -j .rtapi_export -O binary $@.tmp $@.sym
+	(echo '{ global : '; tr -s '\0' < $@.sym | xargs -r0 printf '%s;\n' | grep .; echo 'local : * ; };') > $@.ver
+	$(CC) -shared -Bsymbolic $(RTLDFLAGS) -Wl,--version-script,$@.ver -o $@ $(uspace-objs) -lm \
+	  -Wl,--whole-archive liblcecdevices_uspace.a -Wl,--no-whole-archive -L$(LIBDIR) -llinuxcnchal \
+	  -L$(USPACE_ETHERCAT)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2 -lpthread -lrt
+	chmod -x $@
+
 
 # Rules for building RTAI.  Currently disabled, and needs updated to
 # work.  Ping @scottlaird if you need this and can't get it to work.
@@ -79,7 +119,7 @@ liblcecdevices.a: $(device-objs)
 install: install-user install-realtime
 	true  # override 'install' from $(MODINC)
 
-realtime: lcec.so
+realtime: lcec.so $(if $(BUILD_USPACE),lcec_uspace.so)
 user: lcec_conf lcec_devices lcec_configgen
 
 # Run all tests (auto-generated above from tests/test_*.c).
@@ -94,6 +134,9 @@ install-user: user
 install-realtime: realtime
 	mkdir -p $(DESTDIR)$(RTLIBDIR)/
 	cp lcec.so $(DESTDIR)$(RTLIBDIR)/
+ifdef BUILD_USPACE
+	cp lcec_uspace.so $(DESTDIR)$(RTLIBDIR)/
+endif
 
 lcec.so: lcec_main.o $(lcec-common-objs) liblcecdevices.a
 	$(ECHO) Linking $@

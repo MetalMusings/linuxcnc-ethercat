@@ -107,6 +107,191 @@ void lcec_write_master(void *arg, long period);
 
 static void sigsegv_handler(int sig);
 
+#ifdef EC_USPACE_MASTER
+#include <stdlib.h>
+
+static int lcec_uspace_initialized = 0;
+
+/// @brief Start a master inside this process (userspace IgH master).
+///
+/// The kernel master gets its network interface from /etc/ethercat.conf.
+/// Here it comes from the master's "interface" attribute in the XML file, or
+/// else from the environment variable LCEC_ETHERCAT_INTERFACE (for example
+/// enp2s0). LCEC_ETHERCAT_TRANSPORT selects the transport (default "raw").
+/// Only master index 0 is supported.
+static ec_master_t *lcec_request_master(lcec_master_t *master) {
+  const char *interface = master->interface[0] ? master->interface : getenv("LCEC_ETHERCAT_INTERFACE");
+  const char *transport_name = getenv("LCEC_ETHERCAT_TRANSPORT");
+  ec_transport_t *transport;
+  ec_master_t *ec_master;
+
+  if (master->index != 0) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: only master index 0 is supported\n");
+    return NULL;
+  }
+  if (interface == NULL || interface[0] == 0) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX
+        "userspace master: give the EtherCAT network interface as <master interface=\"...\"> or in LCEC_ETHERCAT_INTERFACE\n");
+    return NULL;
+  }
+  if (transport_name == NULL || transport_name[0] == 0) {
+    transport_name = "raw";
+  }
+
+  if (!lcec_uspace_initialized) {
+    // No IPC server: the ethercat tool cannot reach this master.
+    if (ecrt_lib_init(NULL, NULL) < 0) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: ecrt_lib_init() failed\n");
+      return NULL;
+    }
+    lcec_uspace_initialized = 1;
+  }
+
+  if ((transport = ec_transport_create_by_name(transport_name, interface)) == NULL) {
+    rtapi_print_msg(
+        RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: cannot create transport %s on %s\n", transport_name, interface);
+    return NULL;
+  }
+  if ((ec_master = ecrt_startup_master(master->index, transport, NULL, 0, -1, -1)) == NULL) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: cannot start master on %s\n", interface);
+    ec_transport_destroy(transport);
+    return NULL;
+  }
+  rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "userspace master started on %s (%s)\n", interface, transport_name);
+  return ec_master;
+}
+
+#include <errno.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <string.h>
+#include <time.h>
+
+/// Helper thread that runs ecrt_master_activate() outside the servo thread.
+///
+/// In the userspace master, activation stops the master's idle thread
+/// (pthread_join), starts the operation thread and may sleep 10 ms for an
+/// outstanding FSM datagram. Done in the servo thread, that stalls it for
+/// 11-13 ms. The servo thread still makes the first, period-anchored
+/// ecrt_master_application_time() call (it sets IgH's dc_ref_time, the
+/// SYNC0 phase anchor) and then only posts a semaphore.
+typedef struct {
+  pthread_t thread;
+  sem_t sem;
+  int quit;
+} lcec_activator_t;
+
+static void *lcec_activator_main(void *arg) {
+  lcec_master_t *master = (lcec_master_t *)arg;
+  lcec_activator_t *act = (lcec_activator_t *)master->activator;
+  long long t0;
+
+  while (sem_wait(&act->sem) != 0 && errno == EINTR) {
+  }
+  if (act->quit) {
+    return NULL;
+  }
+
+  t0 = rtapi_get_time();
+  if (ecrt_master_activate(master->master)) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "failed to activate master %s\n", master->name);
+    return NULL;  // activated stays 0, so the servo thread keeps skipping this master
+  }
+  master->process_data = ecrt_domain_data(master->domain);
+  master->process_data_len = ecrt_domain_size(master->domain);
+  rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s activated in %lld us (helper thread)\n", master->name, (rtapi_get_time() - t0) / 1000);
+
+  __atomic_store_n(&master->activated, 1, __ATOMIC_RELEASE);
+  return NULL;
+}
+
+static int lcec_start_activator(lcec_master_t *master) {
+  lcec_activator_t *act = calloc(1, sizeof(*act));
+  pthread_attr_t attr;
+  struct sched_param param = {0};
+  int ret;
+
+  if (act == NULL || sem_init(&act->sem, 0, 0) != 0) {
+    free(act);
+    return -1;
+  }
+  master->activator = act;
+  pthread_attr_init(&attr);
+  pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+  pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+  pthread_attr_setschedparam(&attr, &param);
+  ret = pthread_create(&act->thread, &attr, lcec_activator_main, master);
+  pthread_attr_destroy(&attr);
+  if (ret != 0) {
+    sem_destroy(&act->sem);
+    free(act);
+    master->activator = NULL;
+    return -1;
+  }
+  return 0;
+}
+
+static void lcec_stop_activator(lcec_master_t *master) {
+  lcec_activator_t *act = (lcec_activator_t *)master->activator;
+
+  if (act == NULL) {
+    return;
+  }
+  act->quit = 1;
+  sem_post(&act->sem);  // no effect if the thread already took the semaphore
+  pthread_join(act->thread, NULL);
+  sem_destroy(&act->sem);
+  free(act);
+  master->activator = NULL;
+}
+
+/// Deactivate a userspace master and wait until its slaves are in PREOP.
+///
+/// The kernel master keeps running after LinuxCNC releases it, and its idle
+/// thread takes the slaves back to PREOP. The userspace master ends with
+/// LinuxCNC, so without this the slaves lose their frames in OP and drop to
+/// SAFEOP + ERROR (sync error, SM watchdog). ecrt_master_deactivate() requests
+/// PREOP and restarts the idle thread; give it time before the release.
+/// Called from rtapi_app_exit(), outside the servo thread.
+static void lcec_uspace_deactivate(lcec_master_t *master) {
+  const struct timespec period = {0, 10 * 1000 * 1000};  // 10 ms
+  const int max_polls = 200;                             // 2 s
+  ec_master_state_t ms;
+  int i;
+
+  if (!__atomic_exchange_n(&master->activated, 0, __ATOMIC_ACQ_REL)) {
+    return;  // never activated: the slaves were not taken past PREOP
+  }
+
+  // The servo thread now skips this master. Normally it is already stopped
+  // ("halcmd stop" comes before unloading); otherwise let a cycle in
+  // progress finish before the domain memory goes away.
+  nanosleep(&period, NULL);
+
+  ecrt_master_deactivate(master->master);
+
+  memset(&ms, 0, sizeof(ms));
+  for (i = 0; i < max_polls; i++) {
+    nanosleep(&period, NULL);
+    ecrt_master_state(master->master, &ms);
+    if (ms.al_states == 0x02) {  // every responding slave is in PREOP
+      rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: slaves in PREOP after %d ms\n", master->name, (i + 1) * 10);
+      return;
+    }
+  }
+  rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: slaves not in PREOP after %d ms (AL states 0x%02x)\n", master->name,
+      max_polls * 10, ms.al_states);
+}
+#else
+static ec_master_t *lcec_request_master(lcec_master_t *master) {
+  if (master->interface[0]) {
+    rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: interface=\"%s\" is only used by lcec_uspace; the kernel master takes its interface from ethercat.conf\n",
+        master->name, master->interface);
+  }
+  return ecrt_request_master(master->index);
+}
+#endif
+
 /// @brief Main entrypoint from LinuxCNC
 int rtapi_app_main(void) {
   int slave_count;
@@ -131,7 +316,7 @@ int rtapi_app_main(void) {
 #endif
 
   // connect to the HAL
-  if ((lcec_comp_id = hal_init(LCEC_MODULE_NAME)) < 0) {
+  if ((lcec_comp_id = hal_init(LCEC_COMP_NAME)) < 0) {
     rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "hal_init() failed\n");
     goto fail0;
   }
@@ -149,10 +334,16 @@ int rtapi_app_main(void) {
   // initialize masters
   for (master = first_master; master != NULL; master = master->next) {
     // request ethercat master
-    if (!(master->master = ecrt_request_master(master->index))) {
+    if (!(master->master = lcec_request_master(master))) {
       rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "requesting master %s (index %d) failed\n", master->name, master->index);
       goto fail2;
     }
+#ifdef EC_USPACE_MASTER
+    if (lcec_start_activator(master) != 0) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: cannot start the activation thread\n", master->name);
+      goto fail2;
+    }
+#endif
 
 #ifdef __KERNEL__
     // register callbacks
@@ -362,7 +553,12 @@ void rtapi_app_exit(void) {
 
   // deactivate all masters
   for (master = first_master; master != NULL; master = master->next) {
+#ifdef EC_USPACE_MASTER
+    lcec_stop_activator(master);  // lets an activation in progress finish first
+    lcec_uspace_deactivate(master);
+#else
     ecrt_master_deactivate(master->master);
+#endif
   }
 
   lcec_clear_config();
@@ -469,6 +665,8 @@ int lcec_parse_config(void) {
         master->index = master_conf->index;
         strncpy(master->name, master_conf->name, LCEC_CONF_STR_MAXLEN);
         master->name[LCEC_CONF_STR_MAXLEN - 1] = 0;
+        strncpy(master->interface, master_conf->interface, LCEC_CONF_STR_MAXLEN);
+        master->interface[LCEC_CONF_STR_MAXLEN - 1] = 0;
         master->app_time_period = master_conf->appTimePeriod;
         master->sync_ref_cycles = master_conf->refClockSyncCycles;
         // sync_to_ref_clock controls clock sync direction:
@@ -950,6 +1148,10 @@ void lcec_clear_config(void) {
       slave = prev_slave;
     }
 
+#ifdef EC_USPACE_MASTER
+    lcec_stop_activator(master);
+#endif
+
     // release master
     if (master->master) {
       ecrt_release_master(master->master);
@@ -957,6 +1159,13 @@ void lcec_clear_config(void) {
 
     master = prev_master;
   }
+
+#ifdef EC_USPACE_MASTER
+  if (lcec_uspace_initialized) {
+    ecrt_lib_cleanup();
+    lcec_uspace_initialized = 0;
+  }
+#endif
 }
 
 #ifdef __KERNEL__
@@ -1076,9 +1285,14 @@ static int lcec_activate_master(lcec_master_t *master) {
   
   uint64_t initial_app_time;
   
-  if (master->activated) {
+  if (__atomic_load_n(&master->activated, __ATOMIC_ACQUIRE)) {
     return 0;  // Already activated
   }
+#ifdef EC_USPACE_MASTER
+  if (master->activate_requested) {
+    return -1;  // The helper thread is activating the master; skip this cycle
+  }
+#endif
   
   rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "Activating master %s (delayed activation in RT thread)\n", master->name);
   
@@ -1127,17 +1341,28 @@ static int lcec_activate_master(lcec_master_t *master) {
   ecrt_master_application_time(master->master, initial_app_time);
   rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "Initial app_time set to %llu\n", (unsigned long long)initial_app_time);
 
+#ifdef EC_USPACE_MASTER
+  // Hand ecrt_master_activate() to the helper thread (see lcec_activator_main)
+  master->activate_requested = 1;
+  sem_post(&((lcec_activator_t *)master->activator)->sem);
+  return -1;  // skip this cycle
+#else
   // Activate master
-  if (ecrt_master_activate(master->master)) {
-    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "failed to activate master %s\n", master->name);
-    return -1;
+  {
+    long long t0 = rtapi_get_time();
+    if (ecrt_master_activate(master->master)) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "failed to activate master %s\n", master->name);
+      return -1;
+    }
+    rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s activated in %lld us\n", master->name, (rtapi_get_time() - t0) / 1000);
   }
-  
+
   // Get internal process data for domain
   master->process_data = ecrt_domain_data(master->domain);
   master->process_data_len = ecrt_domain_size(master->domain);
-  
+
   master->activated = 1;
+#endif
   rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "Master %s activated successfully\n", master->name);
   
   return 0;
@@ -1315,7 +1540,7 @@ void lcec_write_master(void *arg, long period) {
 #endif
 
   // Skip if master not yet activated (should have been activated in read)
-  if (!master->activated) {
+  if (!__atomic_load_n(&master->activated, __ATOMIC_ACQUIRE)) {
     return;
   }
 
