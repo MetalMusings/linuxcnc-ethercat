@@ -15,6 +15,10 @@ This tree was forked from
 [sittner/linuxcnc-ethercat](https://github.com/sittner/linuxcnc-ethercat)
 in 2023, and is the new home for most LinuxCNC EtherCAT development.
 
+This version supports a userspace EtherCAT master in addition to IgH's
+kernel-mode master, see [Userspace EtherCAT master
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
+
 ## Installing
 
 The recommended way to install this driver is to use the `.deb` apt
@@ -81,37 +85,163 @@ package manager, then first you'll need to make sure that you have the
 LinuxCNC (with its development tools) installed.  Then download
 linuxcnc-ethercat and run `make install`.
 
-### Userspace EtherCAT master (lcec_uspace)
+To run without the kernel module, see [Userspace EtherCAT master
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace) below.
 
-`make install` can also build `lcec_uspace.so`, the same driver built
-against a userspace build of the IgH master
-([stratuMAK/ethercat](https://github.com/stratuMAK/ethercat)). There
-the whole master runs as a library inside LinuxCNC's `rtapi_app`, with
-no kernel module and no `ethercat` service. Install that master in a
-prefix of its own, so that its `ecrt.h` does not replace the kernel
-master's:
 
+## Userspace EtherCAT master (lcec_uspace)
+
+`lcec_uspace` is this driver built against a userspace build of the
+IgH EtherCAT master,
+[stratuMAK/ethercat](https://github.com/stratuMAK/ethercat), a fork of
+IgH 1.6.8. There the whole master (state machines, CoE, distributed
+clocks, domains) runs as a library inside LinuxCNC's `rtapi_app`:
+
+- no kernel module, so nothing to rebuild with DKMS when the kernel is
+  upgraded, and no `ethercat` service or `/etc/ethercat.conf`;
+- the same driver code, device drivers, XML files and HAL pins as
+  `lcec`.
+
+It is **experimental**. stratuMAK's userspace master is new and has not
+been through a realtime qualification on hardware, and `lcec_uspace`
+has so far been tested on one machine: LinuxCNC 2.9.4 on a PREEMPT_RT
+6.12 kernel, an Intel i226 network card, three CiA 402 stepper drives
+with distributed clocks and one I/O slave. Try it with the machine
+unable to do harm, and keep the kernel master installed to go back to.
+
+`lcec_uspace.so` is built and installed next to `lcec.so`, so both are
+available and each machine configuration chooses one.
+
+### Building
+
+1. Build and install the userspace master in a prefix of its own, so
+   that its `ecrt.h` does not replace the kernel master's
+   `/usr/include/ecrt.h`:
+
+   ```
+   git clone https://github.com/stratuMAK/ethercat ethercat-uspace
+   cd ethercat-uspace
+   ./bootstrap
+   ./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
+   make
+   make check          # bus simulator tests, no hardware needed
+   sudo make install
+   ```
+
+   Without `libxdp-dev` installed at `configure` time, only the raw
+   socket (AF_PACKET) transport is built, which works with any network
+   card.
+
+2. Build and install linuxcnc-ethercat as usual (`make` and
+   `sudo make install`). `lcec_uspace.so` is built whenever
+   `/opt/ethercat-uspace/include/ecrt.h` exists; for another prefix, run
+   `make USPACE_ETHERCAT=/path/to/prefix`. The same sources are compiled
+   a second time, as `*.uspace.o`, against that `ecrt.h`.
+
+3. Check what was built. `lcec.so` should use the kernel master's
+   library and `lcec_uspace.so` the userspace one:
+
+   ```
+   $ readelf -d /usr/lib/linuxcnc/modules/lcec.so | grep 'NEEDED.*ethercat'
+    0x0000000000000001 (NEEDED)   Shared library: [libethercat.so.1]
+   $ readelf -d /usr/lib/linuxcnc/modules/lcec_uspace.so | grep 'NEEDED.*ethercat'
+    0x0000000000000001 (NEEDED)   Shared library: [libethercat.so.2]
+   ```
+
+### Configuring
+
+Start from a copy of a working `lcec` configuration and change three
+things:
+
+- In the HAL file, load `lcec_uspace` instead of `lcec`:
+
+  ```
+  loadusr -W lcec_conf ethercat-conf.xml
+  loadrt lcec_uspace
+  ```
+
+  The HAL component is called `lcec_uspace`, because `halcmd` requires
+  the module's name, but pins and functions keep their `lcec.` names
+  (`lcec.read-all`, `lcec.0.X.actual-position`, ...), so the rest of the
+  HAL files stays as it is.
+
+- In the XML file, give the network interface on the master. The
+  kernel master takes it from `/etc/ethercat.conf`; the userspace master
+  has no such file:
+
+  ```XML
+  <master idx="0" interface="enp2s0" appTimePeriod="1000000" refClockSyncCycles="-1000">
+  ```
+
+  The environment variable `LCEC_ETHERCAT_INTERFACE` is used when the
+  attribute is missing, and `LCEC_ETHERCAT_TRANSPORT` selects another
+  transport than `raw` (`xdp-skb`, `xdp-native` if built with libxdp;
+  untested). Only master 0 is supported. `lcec` ignores the attribute.
+
+- Move anything that was done with the `ethercat` tool before starting
+  LinuxCNC into the XML file. The userspace master only exists while
+  LinuxCNC runs. For example, `ethercat -p 0 download 0x2010 0 1` for a
+  16-bit object becomes, in that slave's section:
+
+  ```XML
+  <sdoConfig idx="2010" subIdx="0"><sdoDataRaw data="01 00"/></sdoConfig>
+  ```
+
+### Running and switching between the masters
+
+The kernel master and the userspace master cannot use the same network
+interface, so the kernel master must be stopped while `lcec_uspace`
+runs, and started again for configurations that use `lcec`. A start
+script can do both, so that each configuration can be started from its
+own desktop launcher:
+
+```bash
+#!/bin/bash
+cd "$(dirname "$0")"
+trap 'sudo systemctl start ethercat' EXIT   # back to the kernel master afterwards
+sudo systemctl stop ethercat
+linuxcnc my-machine.ini
 ```
-./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
-make && sudo make install
+
+The script for an `lcec` configuration can make sure the service runs
+before it starts LinuxCNC:
+
+```bash
+systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3; }
 ```
 
-`lcec_uspace.so` is built whenever `/opt/ethercat-uspace/include/ecrt.h`
-exists (set `USPACE_ETHERCAT` for another prefix). To use it:
+### Differences from lcec
 
-- load it with `loadrt lcec_uspace` instead of `loadrt lcec`. Pins and
-  functions keep their `lcec.` names, so the rest of the HAL file is
-  unchanged.
-- give the network interface on the master in the XML file:
-  `<master idx="0" interface="enp2s0" ...>` (or in the environment
-  variable `LCEC_ETHERCAT_INTERFACE`). Only master 0 is supported.
-- stop the kernel master first (`sudo systemctl stop ethercat`): both
-  cannot use the same network interface.
+- At every start, the master scans the bus and configures the slaves
+  (the kernel master keeps them scanned between runs). Expect the slaves
+  in OP a few seconds after LinuxCNC has started.
+- The master is activated in a helper thread instead of in the first
+  servo thread cycle: in the userspace master, activation blocks for
+  10–15 ms (see
+  [stratuMAK/ethercat#7](https://github.com/stratuMAK/ethercat/issues/7)).
+  The first, period-anchored application time is still set in the servo
+  thread, so the DC SYNC0 phase is the same as with `lcec`.
+- On exit, the master is deactivated and the driver waits up to 2 s for
+  the slaves to reach PREOP, which the kernel master's idle thread
+  otherwise does after LinuxCNC has gone. DC slaves may still report a
+  synchronization error between the servo thread stopping and the
+  unload; the kernel master shows the same in `dmesg`.
+- The `ethercat` command line tool cannot reach the master. Use the HAL
+  pins (`lcec.0.slaves-responding`, `lcec.0.all-op`,
+  `lcec.0.<slave>.slave-state-op`, ...) and LinuxCNC's log instead. The
+  master's own messages go to LinuxCNC's standard error, not to `dmesg`.
 
-The master exists only while LinuxCNC runs, so the `ethercat` tool cannot
-reach it, and SDOs that were written with `ethercat download` before
-starting LinuxCNC belong in `<sdoConfig>` in the XML file. On exit, the
-slaves are taken back to PREOP.
+### Troubleshooting
+
+- *userspace master: cannot start master on enp2s0*: the kernel master
+  still owns the interface (`systemctl is-active ethercat`), or the
+  interface name is wrong.
+- *userspace master: give the EtherCAT network interface ...*: the
+  `interface` attribute is missing from `<master>`.
+- *Can't find module 'lcec_uspace'*: linuxcnc-ethercat was built without
+  the userspace master in `/opt/ethercat-uspace`; install it and rebuild.
+- To check which driver a running LinuxCNC uses: `halcmd show comp | grep lcec`
+  lists `lcec` or `lcec_uspace` (next to `lcec_conf`).
 
 
 ## Configuring
