@@ -12,6 +12,38 @@ RTEXTRA_LDFLAGS += -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive -
 
 #EXTRA_CFLAGS += --std=c2x
 EXTRA_CFLAGS += -Wall # Increase debugging level
+
+## EtherCAT masters
+#
+# lcec.so is built against the IgH kernel master (ecrt.h in /usr/include or
+# /usr/local/include, libethercat.so.1), and lcec_uspace.so against the
+# userspace master in $(USPACE_ETHERCAT) (see lcec_uspace.so below). Each is
+# built when its master is installed, and at least one must be. Override the
+# detection with BUILD_KERNEL=yes|no and BUILD_USPACE=yes|no.
+#
+# lcec_conf, lcec_devices and the tests link against the kernel master's
+# libethercat, or against the userspace master's when the kernel master is not
+# built. They only need ecrt.h's types and a few helpers, not a running master.
+USPACE_ETHERCAT ?= /opt/ethercat-uspace
+
+BUILD_KERNEL ?= auto
+ifeq ($(BUILD_KERNEL),auto)
+  BUILD_KERNEL := $(if $(wildcard /usr/include/ecrt.h /usr/local/include/ecrt.h),yes,no)
+endif
+BUILD_USPACE ?= auto
+ifeq ($(BUILD_USPACE),auto)
+  BUILD_USPACE := $(if $(wildcard $(USPACE_ETHERCAT)/include/ecrt.h),yes,no)
+endif
+
+ifeq ($(BUILD_KERNEL),yes)
+  USER_ETHERCAT_LIBS := -lethercat
+else ifeq ($(BUILD_USPACE),yes)
+  # All objects, not only *.uspace.o, are compiled against the userspace ecrt.h.
+  EXTRA_CFLAGS += -I$(USPACE_ETHERCAT)/include
+  USER_ETHERCAT_LIBS := -L$(USPACE_ETHERCAT)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2
+else
+  $(error No EtherCAT master found: install the IgH kernel master (ecrt.h in /usr/include or /usr/local/include), or the userspace master in USPACE_ETHERCAT=$(USPACE_ETHERCAT))
+endif
 #EXTRA_CFLAGS += -fanalyzer # Use GCC's static analyzer tool, doubles compile time
 
 ## targets
@@ -65,13 +97,10 @@ liblcecdevices.a: $(device-objs)
 # --enable-uspace-master). Install it in a prefix of its own, so that its ecrt.h
 # does not shadow the kernel master's /usr/include/ecrt.h:
 #   ./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
-# lcec_uspace.so is built and installed next to lcec.so when that prefix has
-# ecrt.h. The same sources are compiled a second time, as *.uspace.o, against
-# that ecrt.h; the userspace code paths are under #ifdef EC_USPACE_MASTER.
-USPACE_ETHERCAT ?= /opt/ethercat-uspace
-ifneq ($(wildcard $(USPACE_ETHERCAT)/include/ecrt.h),)
-  BUILD_USPACE := yes
-endif
+# lcec_uspace.so is built and installed when that prefix has ecrt.h, next to
+# lcec.so if the kernel master is installed too. The same sources are compiled
+# a second time, as *.uspace.o, against that ecrt.h; the userspace code paths
+# are under #ifdef EC_USPACE_MASTER.
 
 uspace-objs := $(lcec-objs:.o=.uspace.o)
 uspace-device-objs := $(device-objs:.o=.uspace.o)
@@ -119,7 +148,7 @@ lcec_uspace.so: $(uspace-objs) liblcecdevices_uspace.a
 install: install-user install-realtime
 	true  # override 'install' from $(MODINC)
 
-realtime: lcec.so $(if $(BUILD_USPACE),lcec_uspace.so)
+realtime: $(if $(filter yes,$(BUILD_KERNEL)),lcec.so) $(if $(filter yes,$(BUILD_USPACE)),lcec_uspace.so)
 user: lcec_conf lcec_devices lcec_configgen
 
 # Run all tests (auto-generated above from tests/test_*.c).
@@ -133,8 +162,10 @@ install-user: user
 
 install-realtime: realtime
 	mkdir -p $(DESTDIR)$(RTLIBDIR)/
+ifeq ($(BUILD_KERNEL),yes)
 	cp lcec.so $(DESTDIR)$(RTLIBDIR)/
-ifdef BUILD_USPACE
+endif
+ifeq ($(BUILD_USPACE),yes)
 	cp lcec_uspace.so $(DESTDIR)$(RTLIBDIR)/
 endif
 
@@ -148,10 +179,10 @@ lcec.so: lcec_main.o $(lcec-common-objs) liblcecdevices.a
 	chmod -x $@
 
 lcec_conf: $(lcec-conf-objs) $(lcec-common-objs) liblcecdevices.a
-	$(CC) -o $@ $(lcec-conf-objs) $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive -lethercat -lm
+	$(CC) -o $@ $(lcec-conf-objs) $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive $(USER_ETHERCAT_LIBS) -lm
 
 lcec_devices: lcec_devices.o $(lcec-common-objs) liblcecdevices.a
-	$(CC) -o $@ lcec_devices.o $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive -lethercat -lm
+	$(CC) -o $@ lcec_devices.o $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive $(USER_ETHERCAT_LIBS) -lm
 
 lcec_configgen: configgen/*.go configgen/*/*.go
 	(cd configgen ; go build lcec_configgen.go)
@@ -165,5 +196,5 @@ configgen/drivers/drivers.go: configgen/devicelist lcec_devices
 
 # Rule for compiling tests/*.bin files.  We're naming test excutables *.bin so we can use wildcards in .gitignore and `make clean` to match them.
 tests/%.bin: tests/%.o $(lcec-common-objs) liblcecdevices.a
-	$(CC) -o $@ $(subst .bin,.o,$@) $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive -lethercat -lm
+	$(CC) -o $@ $(subst .bin,.o,$@) $(lcec-common-objs) -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -llinuxcnchal -lexpat -Wl,--whole-archive liblcecdevices.a -Wl,--no-whole-archive $(USER_ETHERCAT_LIBS) -lm
 

@@ -15,8 +15,11 @@ This tree was forked from
 [sittner/linuxcnc-ethercat](https://github.com/sittner/linuxcnc-ethercat)
 in 2023, and is the new home for most LinuxCNC EtherCAT development.
 
-This version supports a userspace EtherCAT master in addition to IgH's
-kernel-mode master, see [Userspace EtherCAT master
+This version lets you choose between two EtherCAT masters: IgH's
+kernel-mode master, loaded as `lcec` as before, or a userspace master
+that runs inside LinuxCNC without a kernel module, loaded as
+`lcec_uspace`. You can install either or both, and each machine
+configuration chooses which one to use. See [Userspace EtherCAT master
 (lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
 
 ## Installing
@@ -25,6 +28,10 @@ The recommended way to install this driver is to use the `.deb` apt
 repository managed by the Etherlab folks.  It should contain
 everything that you need to install Ethercat support for LinuxCNC with
 minimal manual work.
+
+These instructions install the kernel-mode master and `lcec`. To use
+the userspace master instead, or in addition, see [Userspace EtherCAT
+master (lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
 
 ### Initial setup
 
@@ -80,13 +87,15 @@ then either reboot or run `sudo systemctl start ethercat`.
 ### Manual Installation
 
 If you decide that you want to install this manually and not use a
-package manager, then first you'll need to make sure that you have the
-[Ethercat Master](https://gitlab.com/etherlab.org/ethercat) and
-LinuxCNC (with its development tools) installed.  Then download
-linuxcnc-ethercat and run `make install`.
-
-To run without the kernel module, see [Userspace EtherCAT master
-(lcec_uspace)](#userspace-ethercat-master-lcec_uspace) below.
+package manager, then first you'll need to make sure that you have
+LinuxCNC (with its development tools) and at least one EtherCAT master
+installed: the kernel-mode [Ethercat
+Master](https://gitlab.com/etherlab.org/ethercat), the userspace master
+(see [Userspace EtherCAT master
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace) below), or both.
+Then download linuxcnc-ethercat and run `make install`. It builds
+`lcec` for the kernel-mode master and `lcec_uspace` for the userspace
+master, for whichever of them is installed.
 
 
 ## Userspace EtherCAT master (lcec_uspace)
@@ -107,16 +116,22 @@ been through a realtime qualification on hardware, and `lcec_uspace`
 has so far been tested on one machine: LinuxCNC 2.9.4 on a PREEMPT_RT
 6.12 kernel, an Intel i226 network card, three CiA 402 stepper drives
 with distributed clocks and one I/O slave. Try it with the machine
-unable to do harm, and keep the kernel master installed to go back to.
+unable to do harm, and if you can, keep the kernel master installed as
+well, to switch back to.
 
-`lcec_uspace.so` is built and installed next to `lcec.so`, so both are
-available and each machine configuration chooses one.
+Which master is used is chosen per machine configuration, by loading
+`lcec` or `lcec_uspace` in its HAL file. With both masters installed,
+`lcec.so` and `lcec_uspace.so` are built and installed side by side,
+and you can switch between them (see [Running and switching between the
+masters](#running-and-switching-between-the-masters)). Neither master is
+required: with only one installed, only its module is built (see
+[Building](#building)).
 
 ### Building
 
 1. Build and install the userspace master in a prefix of its own, so
    that its `ecrt.h` does not replace the kernel master's
-   `/usr/include/ecrt.h`:
+   `/usr/include/ecrt.h` if that is installed too:
 
    ```
    git clone https://github.com/stratuMAK/ethercat ethercat-uspace
@@ -138,8 +153,25 @@ available and each machine configuration chooses one.
    `make USPACE_ETHERCAT=/path/to/prefix`. The same sources are compiled
    a second time, as `*.uspace.o`, against that `ecrt.h`.
 
+   Either master is optional. Each module is built when its master is
+   installed:
+
+   | Installed | Built |
+   |---|---|
+   | IgH kernel master only | `lcec.so` |
+   | userspace master only | `lcec_uspace.so` |
+   | both | `lcec.so` and `lcec_uspace.so` |
+
+   The kernel master is detected by `ecrt.h` in `/usr/include` or
+   `/usr/local/include`. Without it, `lcec_conf` and the other tools are
+   linked against the userspace master's `libethercat.so.2`. Override
+   the detection with `make BUILD_KERNEL=no` or `make BUILD_USPACE=no`
+   (or `yes`). Run `make clean` when changing these in a tree that has
+   already been built.
+
 3. Check what was built. `lcec.so` should use the kernel master's
-   library and `lcec_uspace.so` the userspace one:
+   library and `lcec_uspace.so` the userspace one (only the modules
+   that were built are installed):
 
    ```
    $ readelf -d /usr/lib/linuxcnc/modules/lcec.so | grep 'NEEDED.*ethercat'
@@ -150,8 +182,9 @@ available and each machine configuration chooses one.
 
 ### Configuring
 
-Start from a copy of a working `lcec` configuration and change three
-things:
+To move a configuration to the userspace master, start from a copy of
+a working `lcec` configuration, so that you can switch back by starting
+the original, and change three things:
 
 - In the HAL file, load `lcec_uspace` instead of `lcec`:
 
@@ -188,6 +221,9 @@ things:
   ```
 
 ### Running and switching between the masters
+
+This applies when both masters are installed. With only the userspace
+master, start LinuxCNC as usual.
 
 The kernel master and the userspace master cannot use the same network
 interface, so the kernel master must be stopped while `lcec_uspace`
