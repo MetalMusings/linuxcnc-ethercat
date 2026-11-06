@@ -82,9 +82,18 @@ thread, µs:
 
 ## 2. CPU governor and NIC interrupts
 
-`xdp-native` at 500 µs, the same HAL file as in 1, 180 s per run, no
-`isolcpus`. The NIC interrupts went either to CPUs 0–2 or to CPU 3,
-the realtime CPU. Wake-up jitter is |interval − period|.
+`xdp-native` at 500 µs, the same HAL file and load as in 1, 180 s per
+run, no `isolcpus`. Four combinations, A–D, each run once idle and
+once with load:
+
+| run | CPU governor (`scaling_governor`) | NIC interrupts (`/proc/irq/*/smp_affinity_list`) |
+|---|---|---|
+| A | `powersave` (the default) | CPUs 0–2 (the default) |
+| B | `performance` | CPUs 0–2 |
+| C | `performance` | CPU 3, the realtime CPU |
+| D | `powersave` | CPU 3 |
+
+Wake-up jitter is |interval − period|.
 
 | | load | thread mean / p99.9 / max, µs | jitter mean / p99.9 / max, µs |
 |---|---|---|---|
@@ -108,9 +117,14 @@ from a start script with `sudo` if wanted.
 
 ## 3. `isolcpus`, EtherCAT only
 
-The same as in 2 (powersave governor), with
-`isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2`. A is run A from
-2, without `isolcpus`.
+The same as in 2 with the `powersave` governor, after a reboot with
+`isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2`:
+
+| run | `isolcpus` | NIC interrupts |
+|---|---|---|
+| A | no (run A from 2, for comparison) | CPUs 0–2 |
+| E | yes | CPUs 0–2 |
+| F | yes | CPU 3, the realtime CPU |
 
 | | load | thread mean / p99.9 / max, µs | jitter mean / p99.9 / max, µs |
 |---|---|---|---|
