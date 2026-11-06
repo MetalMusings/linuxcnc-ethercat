@@ -83,32 +83,27 @@ thread, µs:
 ## 2. CPU governor and NIC interrupts
 
 `xdp-native` at 500 µs, the same HAL file and load as in 1, 180 s per
-run, no `isolcpus`. Four combinations, A–D, each run once idle and
-once with load:
-
-| run | CPU governor (`scaling_governor`) | NIC interrupts (`/proc/irq/*/smp_affinity_list`) |
-|---|---|---|
-| A | `powersave` (the default) | CPUs 0–2 (the default) |
-| B | `performance` | CPUs 0–2 |
-| C | `performance` | CPU 3, the realtime CPU |
-| D | `powersave` | CPU 3 |
-
-Wake-up jitter is |interval − period|.
+run, no `isolcpus`. The CPU governor (`scaling_governor`) was
+`powersave`, the default, or `performance`, and the NIC interrupts
+(`/proc/irq/*/smp_affinity_list`) went to CPUs 0–2, the default, or to
+CPU 3, the realtime CPU ("IRQ 3"). Each of the four combinations was run
+once idle and once with load. Wake-up jitter is |interval − period|.
 
 | | load | thread mean / p99.9 / max, µs | jitter mean / p99.9 / max, µs |
 |---|---|---|---|
-| A: powersave, IRQ 0–2 | idle | 4.3 / 13.3 / 39 | 0.55 / 4.7 / 17 |
-| B: performance, IRQ 0–2 | idle | 4.2 / 10.4 / 23 | 0.53 / 3.8 / 19 |
-| C: performance, IRQ 3 | idle | 4.1 / 9.8 / 287 | 0.53 / 3.7 / 14 |
-| D: powersave, IRQ 3 | idle | 4.1 / 9.0 / 26 | 0.53 / 3.5 / 14 |
-| A: powersave, IRQ 0–2 | load | 12.5 / 34.0 / 71 | 2.81 / 18.1 / 37 |
-| B: performance, IRQ 0–2 | load | 12.3 / 34.5 / 57 | 2.75 / 17.4 / 36 |
-| C: performance, IRQ 3 | load | 12.4 / 34.2 / 54 | 2.36 / 15.6 / 32 |
-| D: powersave, IRQ 3 | load | 12.7 / 35.2 / 100 | 2.28 / 15.8 / 37 |
+| powersave, IRQ 0–2 | idle | 4.3 / 13.3 / 39 | 0.55 / 4.7 / 17 |
+| performance, IRQ 0–2 | idle | 4.2 / 10.4 / 23 | 0.53 / 3.8 / 19 |
+| performance, IRQ 3 | idle | 4.1 / 9.8 / 287 | 0.53 / 3.7 / 14 |
+| powersave, IRQ 3 | idle | 4.1 / 9.0 / 26 | 0.53 / 3.5 / 14 |
+| powersave, IRQ 0–2 | load | 12.5 / 34.0 / 71 | 2.81 / 18.1 / 37 |
+| performance, IRQ 0–2 | load | 12.3 / 34.5 / 57 | 2.75 / 17.4 / 36 |
+| performance, IRQ 3 | load | 12.4 / 34.2 / 54 | 2.36 / 15.6 / 32 |
+| powersave, IRQ 3 | load | 12.7 / 35.2 / 100 | 2.28 / 15.8 / 37 |
 
 Neither the governor nor the interrupt placement changed the execution
-time. The single long cycles (287 µs in C, 100 µs in D) did not repeat
-in the other runs. With the NIC interrupts on CPU 3, the jitter under
+time. The single long cycles (287 µs with `performance` and IRQ 3 idle,
+100 µs with `powersave` and IRQ 3 under load) did not repeat in the
+other runs. With the NIC interrupts on CPU 3, the jitter under
 load was somewhat lower.
 
 `rtapi_app` cannot pin the NIC interrupts itself, because it accesses
@@ -118,26 +113,22 @@ from a start script with `sudo` if wanted.
 ## 3. `isolcpus`, EtherCAT only
 
 The same as in 2 with the `powersave` governor, after a reboot with
-`isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2`:
-
-| run | `isolcpus` | NIC interrupts |
-|---|---|---|
-| A | no (run A from 2, for comparison) | CPUs 0–2 |
-| E | yes | CPUs 0–2 |
-| F | yes | CPU 3, the realtime CPU |
+`isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2`, with the NIC
+interrupts on CPUs 0–2 or on CPU 3. For comparison, the rows "no
+isolcpus" are the `powersave`, IRQ 0–2 runs from 2.
 
 | | load | thread mean / p99.9 / max, µs | jitter mean / p99.9 / max, µs |
 |---|---|---|---|
-| A: no isolcpus, IRQ 0–2 | idle | 4.3 / 13.3 / 39 | 0.55 / 4.7 / 17 |
-| E: isolcpus, IRQ 0–2 | idle | 4.3 / 10.6 / 55 | 0.52 / 2.7 / 20 |
-| F: isolcpus, IRQ 3 | idle | 4.2 / 10.5 / 22 | 0.53 / 2.4 / 17 |
-| A: no isolcpus, IRQ 0–2 | load | 12.5 / 34.0 / 71 | 2.81 / 18.1 / 37 |
-| E: isolcpus, IRQ 0–2 | load | 13.3 / 35.8 / 57 | 2.52 / 17.2 / 36 |
-| F: isolcpus, IRQ 3 | load | 12.9 / 33.6 / 59 | 1.57 / 14.4 / 38 |
+| no isolcpus, IRQ 0–2 | idle | 4.3 / 13.3 / 39 | 0.55 / 4.7 / 17 |
+| isolcpus, IRQ 0–2 | idle | 4.3 / 10.6 / 55 | 0.52 / 2.7 / 20 |
+| isolcpus, IRQ 3 | idle | 4.2 / 10.5 / 22 | 0.53 / 2.4 / 17 |
+| no isolcpus, IRQ 0–2 | load | 12.5 / 34.0 / 71 | 2.81 / 18.1 / 37 |
+| isolcpus, IRQ 0–2 | load | 13.3 / 35.8 / 57 | 2.52 / 17.2 / 36 |
+| isolcpus, IRQ 3 | load | 12.9 / 33.6 / 59 | 1.57 / 14.4 / 38 |
 
 With only EtherCAT in the realtime thread, `isolcpus` hardly changed
 the execution time, and lowered the jitter mostly together with the
-NIC interrupts on CPU 3 (F). The load here was not pinned, so with
+NIC interrupts on CPU 3. The load here was not pinned, so with
 `isolcpus` it stayed off CPU 3, except for the `--cache` workers, which
 set their own CPU affinity.
 
@@ -208,7 +199,7 @@ For `lcec_uspace` on a machine like this:
 ## Limits of these tests
 
 - One machine and one run per case. Single long cycles (such as the
-  287 µs in run C) may come from rare events that a second run would
+  287 µs with `performance` and IRQ 3 in 2) may come from rare events that a second run would
   not show.
 - The drives were not enabled, so no motor current or real motion.
 - `stress-ng` is a harsher load than a typical plasma cutter's PC sees,
