@@ -307,39 +307,29 @@ systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3
 ### Performance
 
 Measured on the test machine (Intel N100, PREEMPT_RT 6.12, i226 with
-`igc`, interrupt coalescing and EEE off, three CiA 402 drives with DC
-and one I/O slave). A HAL file with only `lcec.read-all` and
-`lcec.write-all` in a 500 µs servo thread (drives not enabled), the
-same XML file for all three (`appTimePeriod="500000"`), and the
-`sampler` component recording every cycle for 180 s (360 000 cycles).
-"With load" is `stress-ng --cpu 4 --vm 2 --vm-bytes 20% --cache 2 --io 1`
-on all four cores.
+`igc`, three CiA 402 drives with DC and one I/O slave), 500 µs servo
+thread with only `lcec.read-all` and `lcec.write-all`, `stress-ng` load
+on all cores. Execution time of the servo thread, µs:
 
-Execution time of the servo thread (`servo-thread.time`), µs:
+| with load | mean | p99.9 | max |
+|---|---|---|---|
+| kernel master (`lcec`) | 16.8 | 45.2 | 664 |
+| userspace, `raw` | 15.0 | 41.9 | 313 |
+| userspace, `xdp-native` | 12.4 | 34.1 | 63 |
 
-| | mean | p99 | p99.9 | max | cycles > 100 µs |
-|---|---|---|---|---|---|
-| kernel master (`lcec`), idle | 7.0 | 9.3 | 16.3 | 177 | 20 |
-| userspace, `raw`, idle | 5.8 | 12.5 | 23.4 | 226 | 14 |
-| userspace, `xdp-native`, idle | 4.1 | 5.6 | 9.5 | 42 | 0 |
-| kernel master (`lcec`), with load | 16.8 | 35.2 | 45.2 | 664 | 65 |
-| userspace, `raw`, with load | 15.0 | 32.0 | 41.9 | 313 | 57 |
-| userspace, `xdp-native`, with load | 12.4 | 27.2 | 34.1 | 63 | 0 |
+- The long cycles of the kernel master and `raw` are in the receive
+  (`lcec.read-all`); `xdp-native` removes them. The DC synchronization
+  was the same with all three, and all slaves stayed in OP.
+- With a full LinuxCNC (QtPlasmaC running a program, motion) and load,
+  isolating the realtime CPU matters: without `isolcpus` the longest
+  servo cycle was 511 µs, longer than the period; with
+  `isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2` (on a 4-core CPU)
+  it was 218 µs, and wake-up jitter over 10 µs was six times rarer.
+- The CPU governor and the placement of the NIC interrupts made no clear
+  difference.
 
-- The long cycles are in `lcec.read-all`, the receive (up to 625 µs with
-  the kernel master and 297 µs with `raw` under load, 32 µs with
-  `xdp-native`). With the kernel master under load, the longest cycle
-  was longer than the 500 µs period.
-- The DC synchronization was the same with all three: `lcec.0.pll-err`
-  0.5 µs on average idle and about 2 µs under load, at most 31–37 µs.
-- All slaves stayed in OP in every cycle of all six runs.
-- The same comparison at 1 ms without load gave the same picture:
-  longest cycle 265 µs (kernel), 242 µs (`raw`) and 70 µs
-  (`xdp-native`).
-
-This is one run of each, without motion, the GUI or network load
-besides EtherCAT, and it measures the execution time of the `lcec`
-functions, not the wake-up latency of the thread.
+All tests, the method and the full tables are in
+[documentation/uspace-performance.md](documentation/uspace-performance.md).
 
 ### Troubleshooting
 

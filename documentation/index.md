@@ -8,6 +8,8 @@
 
 - [Configuration Reference](configuration-reference.md)
 - [Distributed Clocks](distributed-clocks.md)
+- [Performance of lcec_uspace](uspace-performance.md) -- measurements of
+  the userspace master, its transports and system tuning.
 
 ## Development Documentation
 
