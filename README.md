@@ -148,6 +148,21 @@ required: with only one installed, only its module is built (see
    sudo make install
    ```
 
+   The `ethercat` tool for the userspace master and `ec_uspace_master`
+   (see [The ethercat tool](#the-ethercat-tool)) need changes that are
+   not yet in stratuMAK/ethercat. They are on the branch
+   `uspace-tool-ipc-fixes` of
+   [MetalMusings/ethercat](https://github.com/MetalMusings/ethercat/tree/uspace-tool-ipc-fixes);
+   to use them, clone that instead and build it the same way:
+
+   ```
+   git clone -b uspace-tool-ipc-fixes https://github.com/MetalMusings/ethercat ethercat-uspace
+   ```
+
+   With stratuMAK's version `lcec_uspace` works as described, but
+   `ethercat domains` and `ethercat data` fail, and its daemon is called
+   `ec_master` and has no `start`, `stop` or `status`.
+
    Without `libxdp-dev` installed at `configure` time, only the raw
    socket (AF_PACKET) transport is built, which works with any network
    card. Install it (`sudo apt install libxdp-dev`) before `configure`
@@ -156,8 +171,8 @@ required: with only one installed, only its module is built (see
    build, run `./configure` again and `make clean` before `make`: the
    new compiler flag does not make `make` rebuild the files already
    compiled, and the library is then built without the XDP transports.
-   `/opt/ethercat-uspace/bin/ec_master -h` lists the transports that
-   were built:
+   `/opt/ethercat-uspace/bin/ec_uspace_master -h` (`ec_master -h` with
+   stratuMAK's version) lists the transports that were built:
 
    ```
    Available transports: raw xdp-skb xdp-native ccat sim
@@ -249,8 +264,11 @@ the original, and change three things (and optionally a fourth, the transport):
   the same interface, and the transport detaches its program itself.
 
 - Move anything that was done with the `ethercat` tool before starting
-  LinuxCNC into the XML file. The userspace master only exists while
-  LinuxCNC runs. For example, `ethercat -p 0 download 0x2010 0 1` for a
+  LinuxCNC into the XML file. LinuxCNC starts a master of its own, which
+  scans and configures the slaves at every start, and the XML file is
+  applied every time. (A master started with `ec_uspace_master start`
+  can be used before LinuxCNC starts, but it stops when LinuxCNC
+  starts.) For example, `ethercat -p 0 download 0x2010 0 1` for a
   16-bit object becomes, in that slave's section:
 
   ```XML
@@ -283,6 +301,115 @@ before it starts LinuxCNC:
 systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3; }
 ```
 
+`lcec_uspace` stops an `ec_uspace_master` that holds the interface (see
+[The ethercat tool](#the-ethercat-tool)), but the kernel master does
+not know about it. With both masters installed, a systemd drop-in stops
+`ec_uspace_master` whenever the kernel master's service starts, whoever
+starts it:
+
+```
+# /etc/systemd/system/ethercat.service.d/stop-uspace-master.conf
+[Service]
+ExecStartPre=-/opt/ethercat-uspace/bin/ec_uspace_master stop
+```
+
+followed by `sudo systemctl daemon-reload`.
+
+### The ethercat tool
+
+The userspace master has its own build of IgH's `ethercat` tool,
+`/opt/ethercat-uspace/bin/ethercat`, with the same commands and output.
+It reaches the master through the Unix socket `/run/ethercat.sock`
+instead of `/dev/EtherCAT0`. With both masters installed,
+`/usr/bin/ethercat` is the kernel master's tool, which cannot reach the
+userspace master; an alias keeps them apart:
+
+```bash
+alias ethercat-uspace=/opt/ethercat-uspace/bin/ethercat
+```
+
+A userspace master runs either inside LinuxCNC or, when LinuxCNC is not
+running, as `ec_uspace_master`. The tool talks to whichever runs, and
+never starts one itself.
+
+#### While LinuxCNC runs
+
+`lcec_uspace` opens the socket when it starts its master. The socket
+belongs to the user that runs LinuxCNC, so the tool needs no `sudo`:
+
+```
+$ ethercat-uspace slaves
+0  0:0  OP  +  ECT60V202(COE)
+1  0:1  OP  +  ECT60V202(COE)
+2  0:2  OP  +  ECT60V202(COE)
+3  0:3  OP  +  MetalMusings EaserCAT 7000
+```
+
+The commands are served by a thread outside the servo thread. About 165
+tool calls per second (`slaves -v`, `domains -v`, `data`, `upload`,
+`sdos`, `reg_read`, `sii_read`, `master`) did not lengthen the servo
+thread's longest cycle (see
+[documentation/uspace-performance.md](documentation/uspace-performance.md#5-the-ethercat-tool-while-linuxcnc-runs)).
+`upload` and `download` work on slaves in OP, so mind what a `download`
+does to a running machine.
+
+Tested: `master`, `slaves`, `domains`, `data`, `config`, `pdos`, `sdos`,
+`upload`, `download`, `sii_read`, `reg_read`, `crc`, `graph`, `xml`,
+`cstruct`, `debug`. Not yet tested: `states`, `sii_write`, `foe_*`,
+`soe_*`, `alias`, `rescan`.
+
+| Environment variable | |
+|---|---|
+| `LCEC_ETHERCAT_SOCKET` | socket path (default `/run/ethercat.sock`); `none` turns the socket off |
+| `LCEC_ETHERCAT_SOCKET_GROUP` | an extra group that may use the socket |
+
+#### Without LinuxCNC: ec_uspace_master
+
+`ec_uspace_master` runs the userspace master in the background, the way
+the `ethercat` service runs the kernel master:
+
+```
+sudo ec_uspace_master start     # start it and wait for the bus scan
+ethercat-uspace slaves          # no sudo needed from here on
+ec_uspace_master status         # who holds the interface
+sudo ec_uspace_master stop      # stop it and wait until the interface is free
+```
+
+Its settings are in `/opt/ethercat-uspace/etc/ethercat-uspace.conf`
+(`-i`, `-t` and `-x` after `start` override them):
+
+```
+INTERFACE=enp2s0
+TRANSPORT=xdp-native
+# Seconds without a tool command before the master exits; 0 = never.
+IDLE_EXIT=0
+```
+
+`GROUP`, `CPU` and `IRQ_CPU` are optional.
+
+- `start` returns once the slaves are in PREOP, a few seconds. If the
+  master already runs, it does nothing.
+- The socket is given to the group in `GROUP`, else to the group of the
+  user that ran `sudo`, so the tool works without `sudo` afterwards.
+- The master runs until `stop`, until LinuxCNC starts, or until
+  `IDLE_EXIT` seconds have passed without a tool command.
+- States set with `ethercat states` stay between commands, as with the
+  kernel master.
+- Without LinuxCNC there is no application configuration, so `domains`,
+  `data` and `config` are empty, as with the kernel master on its own.
+  The frame counters of `ethercat master` start from zero at every
+  start.
+
+Whoever uses an interface holds the lock
+`/run/ethercat-uspace.<interface>.lock` with its PID in it. When
+LinuxCNC starts, `lcec_uspace` takes it: an `ec_uspace_master` holding
+it is sent SIGTERM, and LinuxCNC waits until the interface is free. Any
+other holder, such as a second LinuxCNC, stops the start with an error.
+`start` refuses to run while the kernel master is loaded
+(`/dev/EtherCAT0` exists); for the other direction, see the drop-in in
+[Running and switching between the
+masters](#running-and-switching-between-the-masters).
+
 ### Differences from lcec
 
 - At every start, the master scans the bus and configures the slaves
@@ -299,10 +426,10 @@ systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3
   otherwise does after LinuxCNC has gone. DC slaves may still report a
   synchronization error between the servo thread stopping and the
   unload; the kernel master shows the same in `dmesg`.
-- The `ethercat` command line tool cannot reach the master. Use the HAL
-  pins (`lcec.0.slaves-responding`, `lcec.0.all-op`,
-  `lcec.0.<slave>.slave-state-op`, ...) and LinuxCNC's log instead. The
-  master's own messages go to LinuxCNC's standard error, not to `dmesg`.
+- The `ethercat` command line tool is the userspace build,
+  `/opt/ethercat-uspace/bin/ethercat`, not `/usr/bin/ethercat` (see
+  [The ethercat tool](#the-ethercat-tool)). The master's own messages go
+  to LinuxCNC's standard error, not to `dmesg`.
 
 ### Performance
 
@@ -336,11 +463,23 @@ All tests, the method and the full tables are in
 - *userspace master: cannot start master on enp2s0*: the kernel master
   still owns the interface (`systemctl is-active ethercat`), or the
   interface name is wrong.
+- *userspace master: enp2s0 is in use by process ...*: another program
+  than `ec_uspace_master` holds the interface lock, such as a second
+  LinuxCNC. `ec_uspace_master status` tells which.
+- *Failed to connect to master socket /var/run/ethercat.sock: No such
+  file or directory. No userspace master is running.*: neither LinuxCNC
+  nor `ec_uspace_master` runs. Start one with
+  `sudo ec_uspace_master start`, or use `/usr/bin/ethercat` if the
+  kernel master runs.
+- *Failed to connect to master socket ...: Permission denied*: the user
+  is not in the socket's group (`ls -l /run/ethercat.sock`). Set
+  `LCEC_ETHERCAT_SOCKET_GROUP` for LinuxCNC, or `GROUP` in
+  `ethercat-uspace.conf`.
 - *userspace master: give the EtherCAT network interface ...*: the
   `interface` attribute is missing from `<master>`.
 - *userspace master: cannot create transport xdp-native on enp2s0*: the
   userspace master was built without libxdp (check with
-  `/opt/ethercat-uspace/bin/ec_master -h`, see [Building](#building)),
+  `/opt/ethercat-uspace/bin/ec_uspace_master -h`, see [Building](#building)),
   the transport name is misspelled, or the network driver lacks XDP
   support (try `xdp-skb` or `raw`).
 - After a crash with an XDP transport, the XDP program may stay attached

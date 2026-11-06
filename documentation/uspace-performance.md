@@ -22,6 +22,8 @@ that matters for it. All tests were made on one machine in November
   than the 500 µs period, and wake-up jitter was larger. With it the
   longest cycle was 218 µs. The mean execution time is about the same
   either way.
+- **The `ethercat` tool** can be used while LinuxCNC runs: about 165
+  tool calls per second did not lengthen the servo cycle.
 - **Load raises execution time about threefold** whatever the tuning:
   the N100's cores share the L2 cache and the memory bus, so a
   memory-heavy load on the other cores slows the realtime core as well.
@@ -181,6 +183,29 @@ The NIC interrupts were on CPUs 0–2, and each run lasted 1 h
   (S1) without `--cache-no-affinity` the cache workers moved between
   CPUs, also onto CPU 3, and the mean was 22.8 µs, with the same jitter
   as S1b.
+
+## 5. The `ethercat` tool while LinuxCNC runs
+
+`lcec_uspace` serves the `ethercat` tool through a socket, from a
+thread outside the servo thread (see
+[README](../README.md#the-ethercat-tool)). To see whether the tool
+disturbs the realtime path, QtPlasmaC ran with a 1 ms servo thread,
+`xdp-native` and `isolcpus`, idle, without `stress-ng`. Four runs of
+60 s were made in turn: two without the tool, and two with a loop that
+ran `slaves -v`, `domains -v`, `data`, `upload`, `sdos`, `reg_read`,
+`sii_read` and `master` back to back, about 165 tool calls per second.
+`servo-thread.tmax` was reset at the start of each run, and
+`lcec.0.pll-err` was sampled with `halcmd` meanwhile.
+
+| | longest servo cycle (µs) | largest \|pll-err\| sampled (µs) |
+|---|---|---|
+| without the tool | 103, 124 | 26, 30 |
+| with the tool | 97, 107 | 33, 36 |
+
+The tool did not lengthen the servo cycle. The sampled DC error was a
+little higher with it, but the loop also started about 165 processes per
+second on CPUs 0–2, and two runs are too few to tell. No frames were
+lost, the working counter stayed complete, and all slaves stayed in OP.
 
 ## Recommendations
 
