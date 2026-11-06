@@ -20,7 +20,12 @@ kernel-mode master, loaded as `lcec` as before, or a userspace master
 that runs inside LinuxCNC without a kernel module, loaded as
 `lcec_uspace`. You can install either or both, and each machine
 configuration chooses which one to use. See [Userspace EtherCAT master
-(lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace). In
+[performance tests](#performance) on a 500 µs servo thread, the
+userspace master with the `xdp-native` transport had the shortest and
+most even cycle times of the three ways of running: its longest cycle
+under load was 63 µs, against 313 µs with the userspace master's
+default `raw` transport and 664 µs with the kernel master.
 
 ## Installing
 
