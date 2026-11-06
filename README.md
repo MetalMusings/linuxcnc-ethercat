@@ -34,9 +34,11 @@ repository managed by the Etherlab folks.  It should contain
 everything that you need to install Ethercat support for LinuxCNC with
 minimal manual work.
 
-These instructions install the kernel-mode master and `lcec`. To use
-the userspace master instead, or in addition, see [Userspace EtherCAT
-master (lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
+These instructions install the kernel-mode master and `lcec`. The
+userspace master and `lcec_uspace` are not packaged; to use them
+instead, or in addition, build them as described in
+[Building](#building) under [Userspace EtherCAT master
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
 
 ### Initial setup
 
@@ -134,12 +136,31 @@ required: with only one installed, only its module is built (see
 
 ### Building
 
-1. Build and install the userspace master in a prefix of its own, so
+These steps install the userspace master and `lcec_uspace` on a
+machine that already runs LinuxCNC 2.9 (uspace, preferably on a
+PREEMPT_RT kernel). They were tested on Debian 13 with LinuxCNC 2.9.4.
+The kernel master can stay installed; see [Running and switching
+between the masters](#running-and-switching-between-the-masters).
+
+1. Install the build tools and libraries:
+
+   ```
+   sudo apt install build-essential git autoconf automake libtool pkg-config \
+       libxdp-dev libbpf-dev libexpat1-dev golang-go linuxcnc-uspace-dev ethtool
+   ```
+
+   `linuxcnc-uspace-dev` provides `halcompile` and LinuxCNC's headers
+   (with a LinuxCNC built from source, use that build instead).
+   `libxdp-dev` is needed for the XDP transports, which have the lowest
+   latency (see [Performance](#performance)); without it only the raw
+   socket transport is built.
+
+2. Build and install the userspace master in a prefix of its own, so
    that its `ecrt.h` does not replace the kernel master's
    `/usr/include/ecrt.h` if that is installed too:
 
    ```
-   git clone https://github.com/stratuMAK/ethercat ethercat-uspace
+   git clone -b uspace-tool-ipc-fixes https://github.com/MetalMusings/ethercat ethercat-uspace
    cd ethercat-uspace
    ./bootstrap
    ./configure --enable-uspace-master --prefix=/opt/ethercat-uspace
@@ -148,41 +169,86 @@ required: with only one installed, only its module is built (see
    sudo make install
    ```
 
-   The `ethercat` tool for the userspace master and `ec_uspace_master`
-   (see [The ethercat tool](#the-ethercat-tool)) need changes that are
-   not yet in stratuMAK/ethercat. They are on the branch
-   `uspace-tool-ipc-fixes` of
-   [MetalMusings/ethercat](https://github.com/MetalMusings/ethercat/tree/uspace-tool-ipc-fixes);
-   to use them, clone that instead and build it the same way:
+   This is [stratuMAK/ethercat](https://github.com/stratuMAK/ethercat)
+   with the changes that the `ethercat` tool and `ec_uspace_master`
+   need (see [The ethercat tool](#the-ethercat-tool)), which are not yet
+   in stratuMAK's version. With stratuMAK's version `lcec_uspace` works
+   as described, but `ethercat domains` and `ethercat data` fail, and
+   its daemon is called `ec_master` and has no `start`, `stop` or
+   `status`.
+
+   Check that the XDP transports were built:
 
    ```
-   git clone -b uspace-tool-ipc-fixes https://github.com/MetalMusings/ethercat ethercat-uspace
-   ```
-
-   With stratuMAK's version `lcec_uspace` works as described, but
-   `ethercat domains` and `ethercat data` fail, and its daemon is called
-   `ec_master` and has no `start`, `stop` or `status`.
-
-   Without `libxdp-dev` installed at `configure` time, only the raw
-   socket (AF_PACKET) transport is built, which works with any network
-   card. Install it (`sudo apt install libxdp-dev`) before `configure`
-   to also build the XDP transports, which have the lowest latency (see
-   [Performance](#performance)). If it is installed after an earlier
-   build, run `./configure` again and `make clean` before `make`: the
-   new compiler flag does not make `make` rebuild the files already
-   compiled, and the library is then built without the XDP transports.
-   `/opt/ethercat-uspace/bin/ec_uspace_master -h` (`ec_master -h` with
-   stratuMAK's version) lists the transports that were built:
-
-   ```
+   $ /opt/ethercat-uspace/bin/ec_uspace_master -h 2>&1 | grep transports
    Available transports: raw xdp-skb xdp-native ccat sim
    ```
 
-2. Build and install linuxcnc-ethercat as usual (`make` and
-   `sudo make install`). `lcec_uspace.so` is built whenever
+   If `xdp-skb` and `xdp-native` are missing, `libxdp-dev` was not
+   installed when `configure` ran. Install it, then run `./configure`
+   again and `make clean` before `make`: the new compiler flag does not
+   make `make` rebuild the files already compiled.
+
+3. Make the userspace tools easy to reach. `/usr/bin/ethercat` is the
+   kernel master's tool (if installed), so give the userspace one its
+   own name. `/usr/local/bin` is also on `sudo`'s path:
+
+   ```
+   sudo ln -s /opt/ethercat-uspace/bin/ethercat /usr/local/bin/ethercat-uspace
+   sudo ln -s /opt/ethercat-uspace/bin/ec_uspace_master /usr/local/bin/ec_uspace_master
+   ```
+
+4. Tell `ec_uspace_master` which network interface the EtherCAT bus is
+   on (find it with `ip link`), and which transport to use (see
+   [Configuring](#configuring)):
+
+   ```
+   sudo mkdir -p /opt/ethercat-uspace/etc
+   sudo tee /opt/ethercat-uspace/etc/ethercat-uspace.conf <<EOF
+   INTERFACE=enp2s0
+   TRANSPORT=xdp-native
+   IDLE_EXIT=0
+   EOF
+   ```
+
+   This file is only for `ec_uspace_master`; LinuxCNC takes the
+   interface from the XML file.
+
+5. Check that the master finds the slaves. If the kernel master is
+   installed, stop it first (`sudo systemctl stop ethercat`):
+
+   ```
+   $ sudo ec_uspace_master start
+   ec_uspace_master started on enp2s0 (xdp-native, pid 12345), 4 slave(s).
+   It runs until LinuxCNC starts or "sudo ec_uspace_master stop".
+   $ ethercat-uspace slaves
+   0  0:0  PREOP  +  ECT60V202(COE)
+   ...
+   $ sudo ec_uspace_master stop
+   ```
+
+   If `start` reports 0 slaves, check the cable and the interface name.
+   If it fails with `xdp-native`, try `TRANSPORT=raw`: the network
+   driver may lack XDP support.
+
+6. Build and install linuxcnc-ethercat from this repository (the
+   `.deb` packages and the linuxcnc-ethercat upstream repository do not
+   have `lcec_uspace`):
+
+   ```
+   git clone https://github.com/MetalMusings/linuxcnc-ethercat
+   cd linuxcnc-ethercat
+   make
+   sudo make install
+   ```
+
+   `lcec_uspace.so` is built whenever
    `/opt/ethercat-uspace/include/ecrt.h` exists; for another prefix, run
    `make USPACE_ETHERCAT=/path/to/prefix`. The same sources are compiled
-   a second time, as `*.uspace.o`, against that `ecrt.h`.
+   a second time, as `*.uspace.o`, against that `ecrt.h`. If the
+   `linuxcnc-ethercat` package is installed, `make install` replaces its
+   files, and a later upgrade of the package replaces them back; remove
+   the package or run `sudo make install` again after an upgrade.
 
    Either master is optional. Each module is built when its master is
    installed:
@@ -200,7 +266,7 @@ required: with only one installed, only its module is built (see
    (or `yes`). Run `make clean` when changing these in a tree that has
    already been built.
 
-3. Check what was built. `lcec.so` should use the kernel master's
+7. Check what was built. `lcec.so` should use the kernel master's
    library and `lcec_uspace.so` the userspace one (only the modules
    that were built are installed):
 
@@ -210,6 +276,15 @@ required: with only one installed, only its module is built (see
    $ readelf -d /usr/lib/linuxcnc/modules/lcec_uspace.so | grep 'NEEDED.*ethercat'
     0x0000000000000001 (NEEDED)   Shared library: [libethercat.so.2]
    ```
+
+8. Optionally, tune the machine for the realtime thread: turn off
+   interrupt coalescing and EEE on the EtherCAT interface (in the start
+   script, see [Running and switching between the
+   masters](#running-and-switching-between-the-masters)), and isolate
+   the realtime CPU (see [Performance](#performance)).
+
+Then move a machine configuration to the userspace master as described
+next.
 
 ### Configuring
 
@@ -277,25 +352,55 @@ the original, and change three things (and optionally a fourth, the transport):
 
 ### Running and switching between the masters
 
-This applies when both masters are installed. With only the userspace
-master, start LinuxCNC as usual.
-
-The kernel master and the userspace master cannot use the same network
-interface, so the kernel master must be stopped while `lcec_uspace`
-runs, and started again for configurations that use `lcec`. A start
-script can do both, so that each configuration can be started from its
-own desktop launcher:
+A start script per machine configuration keeps the settings for the
+userspace master together and can be started from a desktop launcher.
+With the kernel master installed as well, it also stops the kernel
+master, which must not use the network interface at the same time, and
+starts it again when LinuxCNC exits:
 
 ```bash
 #!/bin/bash
+# start-uspace.sh, next to my-machine.ini
 cd "$(dirname "$0")"
-trap 'sudo systemctl start ethercat' EXIT   # back to the kernel master afterwards
-sudo systemctl stop ethercat
+
+# Only with the kernel master installed: stop it while LinuxCNC runs.
+if systemctl is-active --quiet ethercat; then
+    trap 'sudo systemctl start ethercat' EXIT
+    sudo systemctl stop ethercat
+fi
+
+# Lower latency on the EtherCAT interface: no interrupt coalescing, no EEE.
+sudo ethtool -C enp2s0 rx-usecs 0 tx-usecs 0
+sudo ethtool --set-eee enp2s0 eee off
+
+export LCEC_ETHERCAT_TRANSPORT=xdp-native
 linuxcnc my-machine.ini
 ```
 
-The script for an `lcec` configuration can make sure the service runs
-before it starts LinuxCNC:
+A launcher on the desktop, for example `~/Desktop/my-machine.desktop`
+(made executable with `chmod +x`):
+
+```
+[Desktop Entry]
+Type=Application
+Name=My machine (userspace master)
+Exec=/home/cnc/linuxcnc/configs/my-machine/start-uspace.sh
+Path=/home/cnc/linuxcnc/configs/my-machine
+Icon=linuxcncicon
+Terminal=false
+```
+
+A launcher has no terminal to ask for the `sudo` password, so allow
+these commands without one (`ethtool` needs `sudo apt install ethtool`).
+Create the file with `sudo visudo -f /etc/sudoers.d/linuxcnc-ethercat`
+and replace `cnc` with your user name:
+
+```
+cnc ALL=(root) NOPASSWD: /usr/bin/systemctl start ethercat, /usr/bin/systemctl stop ethercat, /usr/sbin/ethtool
+```
+
+The script for an `lcec` configuration can make sure the kernel master
+runs before it starts LinuxCNC:
 
 ```bash
 systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3; }
@@ -322,11 +427,8 @@ The userspace master has its own build of IgH's `ethercat` tool,
 It reaches the master through the Unix socket `/run/ethercat.sock`
 instead of `/dev/EtherCAT0`. With both masters installed,
 `/usr/bin/ethercat` is the kernel master's tool, which cannot reach the
-userspace master; an alias keeps them apart:
-
-```bash
-alias ethercat-uspace=/opt/ethercat-uspace/bin/ethercat
-```
+userspace master; step 3 of [Building](#building) links the userspace
+one as `ethercat-uspace`, and the examples here use that name.
 
 A userspace master runs either inside LinuxCNC or, when LinuxCNC is not
 running, as `ec_uspace_master`. The tool talks to whichever runs, and
