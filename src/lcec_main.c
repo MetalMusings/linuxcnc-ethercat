@@ -108,9 +108,54 @@ void lcec_write_master(void *arg, long period);
 static void sigsegv_handler(int sig);
 
 #ifdef EC_USPACE_MASTER
+#include <errno.h>
+#include <grp.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/fsuid.h>
+#include <unistd.h>
 
 static int lcec_uspace_initialized = 0;
+
+/// @brief Path of the IPC socket for the ethercat tool, or NULL for none.
+///
+/// LCEC_ETHERCAT_SOCKET selects the path. Unset means the library default
+/// (/var/run/ethercat.sock); "" or "none" turns the IPC server off.
+static const char *lcec_uspace_socket_path(void) {
+  const char *path = getenv("LCEC_ETHERCAT_SOCKET");
+
+  if (path == NULL) {
+    return EC_IPC_DEFAULT_SOCKET_PATH;
+  }
+  if (path[0] == 0 || strcmp(path, "none") == 0) {
+    return NULL;
+  }
+  return path;
+}
+
+/// @brief Give the LinuxCNC user (and LCEC_ETHERCAT_SOCKET_GROUP) the socket.
+///
+/// The library creates the socket with mode 0660. Called with fsuid 0, so
+/// the socket would be root's; hand it to the user that runs LinuxCNC, so
+/// that the ethercat tool works without sudo. An extra group can be given
+/// access, the same way as ec_master --socket-group does.
+static void lcec_uspace_socket_access(const char *path, uid_t user) {
+  const char *group_name = getenv("LCEC_ETHERCAT_SOCKET_GROUP");
+  gid_t gid = (gid_t)-1;
+  struct group *group;
+
+  if (group_name != NULL && group_name[0] != 0) {
+    if ((group = getgrnam(group_name)) == NULL) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: unknown group %s for %s\n", group_name, path);
+    } else {
+      gid = group->gr_gid;
+    }
+  }
+  if (chown(path, user, gid) < 0) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: cannot hand %s to uid %d: %s\n", path, (int)user,
+        strerror(errno));
+  }
+}
 
 /// @brief Start a master inside this process (userspace IgH master).
 ///
@@ -139,8 +184,17 @@ static ec_master_t *lcec_request_master(lcec_master_t *master) {
   }
 
   if (!lcec_uspace_initialized) {
-    // No IPC server: the ethercat tool cannot reach this master.
-    if (ecrt_lib_init(NULL, NULL) < 0) {
+    // The IPC server lets the uspace ethercat tool reach this master.
+    const char *socket_path = lcec_uspace_socket_path();
+    // rtapi_app is setuid root but keeps the user's fsuid, which may not
+    // create the socket in /run. Use fsuid 0 while the library makes it.
+    uid_t user = setfsuid(0);
+    int ret = ecrt_lib_init(NULL, socket_path);
+    if (ret >= 0 && socket_path != NULL) {
+      lcec_uspace_socket_access(socket_path, user);
+    }
+    setfsuid(user);
+    if (ret < 0) {
       rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: ecrt_lib_init() failed\n");
       return NULL;
     }
@@ -1162,7 +1216,9 @@ void lcec_clear_config(void) {
 
 #ifdef EC_USPACE_MASTER
   if (lcec_uspace_initialized) {
+    uid_t user = setfsuid(0);  // ecrt_lib_cleanup() removes the socket in /run
     ecrt_lib_cleanup();
+    setfsuid(user);
     lcec_uspace_initialized = 0;
   }
 #endif
