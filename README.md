@@ -145,7 +145,18 @@ required: with only one installed, only its module is built (see
 
    Without `libxdp-dev` installed at `configure` time, only the raw
    socket (AF_PACKET) transport is built, which works with any network
-   card.
+   card. Install it (`sudo apt install libxdp-dev`) before `configure`
+   to also build the XDP transports, which have the lowest latency (see
+   [Performance](#performance)). If it is installed after an earlier
+   build, run `./configure` again and `make clean` before `make`: the
+   new compiler flag does not make `make` rebuild the files already
+   compiled, and the library is then built without the XDP transports.
+   `/opt/ethercat-uspace/bin/ec_master -h` lists the transports that
+   were built:
+
+   ```
+   Available transports: raw xdp-skb xdp-native ccat sim
+   ```
 
 2. Build and install linuxcnc-ethercat as usual (`make` and
    `sudo make install`). `lcec_uspace.so` is built whenever
@@ -184,7 +195,7 @@ required: with only one installed, only its module is built (see
 
 To move a configuration to the userspace master, start from a copy of
 a working `lcec` configuration, so that you can switch back by starting
-the original, and change three things:
+the original, and change three things (and optionally a fourth, the transport):
 
 - In the HAL file, load `lcec_uspace` instead of `lcec`:
 
@@ -207,9 +218,30 @@ the original, and change three things:
   ```
 
   The environment variable `LCEC_ETHERCAT_INTERFACE` is used when the
-  attribute is missing, and `LCEC_ETHERCAT_TRANSPORT` selects another
-  transport than `raw` (`xdp-skb`, `xdp-native` if built with libxdp;
-  untested). Only master 0 is supported. `lcec` ignores the attribute.
+  attribute is missing. Only master 0 is supported. `lcec` ignores the
+  attribute.
+
+- Optionally, choose the transport with the environment variable
+  `LCEC_ETHERCAT_TRANSPORT`, for example in the start script (see below):
+
+  ```bash
+  export LCEC_ETHERCAT_TRANSPORT=xdp-native
+  ```
+
+  | Transport | |
+  |---|---|
+  | `raw` (default) | raw socket (AF_PACKET), works with any network card |
+  | `xdp-native` | AF_XDP in the network driver; needs a network driver with XDP support, such as `igc` for the i225/i226. Removes the long receive times of `raw` (see [Performance](#performance)) |
+  | `xdp-skb` | AF_XDP in the kernel's generic path, works with any network card, but gains little over `raw`; untested |
+
+  The XDP transports need the userspace master built with libxdp (see
+  [Building](#building)). `xdp-native` has been tested on an i226 with
+  the `igc` driver. When it starts, libxdp may print
+  `Can't use dispatcher without a working bpffs` and
+  `Falling back to loading single prog without dispatcher`, and on exit
+  `Error occurred when decrementing xsk XDP prog refcount`. These are
+  harmless: the dispatcher is only needed for several XDP programs on
+  the same interface, and the transport detaches its program itself.
 
 - Move anything that was done with the `ethercat` tool before starting
   LinuxCNC into the XML file. The userspace master only exists while
@@ -267,6 +299,43 @@ systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3
   `lcec.0.<slave>.slave-state-op`, ...) and LinuxCNC's log instead. The
   master's own messages go to LinuxCNC's standard error, not to `dmesg`.
 
+### Performance
+
+Measured on the test machine (Intel N100, PREEMPT_RT 6.12, i226 with
+`igc`, interrupt coalescing and EEE off, three CiA 402 drives with DC
+and one I/O slave). A HAL file with only `lcec.read-all` and
+`lcec.write-all` in a 500 µs servo thread (drives not enabled), the
+same XML file for all three (`appTimePeriod="500000"`), and the
+`sampler` component recording every cycle for 180 s (360 000 cycles).
+"With load" is `stress-ng --cpu 4 --vm 2 --vm-bytes 20% --cache 2 --io 1`
+on all four cores.
+
+Execution time of the servo thread (`servo-thread.time`), µs:
+
+| | mean | p99 | p99.9 | max | cycles > 100 µs |
+|---|---|---|---|---|---|
+| kernel master (`lcec`), idle | 7.0 | 9.3 | 16.3 | 177 | 20 |
+| userspace, `raw`, idle | 5.8 | 12.5 | 23.4 | 226 | 14 |
+| userspace, `xdp-native`, idle | 4.1 | 5.6 | 9.5 | 42 | 0 |
+| kernel master (`lcec`), with load | 16.8 | 35.2 | 45.2 | 664 | 65 |
+| userspace, `raw`, with load | 15.0 | 32.0 | 41.9 | 313 | 57 |
+| userspace, `xdp-native`, with load | 12.4 | 27.2 | 34.1 | 63 | 0 |
+
+- The long cycles are in `lcec.read-all`, the receive (up to 625 µs with
+  the kernel master and 297 µs with `raw` under load, 32 µs with
+  `xdp-native`). With the kernel master under load, the longest cycle
+  was longer than the 500 µs period.
+- The DC synchronization was the same with all three: `lcec.0.pll-err`
+  0.5 µs on average idle and about 2 µs under load, at most 31–37 µs.
+- All slaves stayed in OP in every cycle of all six runs.
+- The same comparison at 1 ms without load gave the same picture:
+  longest cycle 265 µs (kernel), 242 µs (`raw`) and 70 µs
+  (`xdp-native`).
+
+This is one run of each, without motion, the GUI or network load
+besides EtherCAT, and it measures the execution time of the `lcec`
+functions, not the wake-up latency of the thread.
+
 ### Troubleshooting
 
 - *userspace master: cannot start master on enp2s0*: the kernel master
@@ -274,6 +343,14 @@ systemctl is-active --quiet ethercat || { sudo systemctl start ethercat; sleep 3
   interface name is wrong.
 - *userspace master: give the EtherCAT network interface ...*: the
   `interface` attribute is missing from `<master>`.
+- *userspace master: cannot create transport xdp-native on enp2s0*: the
+  userspace master was built without libxdp (check with
+  `/opt/ethercat-uspace/bin/ec_master -h`, see [Building](#building)),
+  the transport name is misspelled, or the network driver lacks XDP
+  support (try `xdp-skb` or `raw`).
+- After a crash with an XDP transport, the XDP program may stay attached
+  to the interface. `ip link show enp2s0` then shows `xdp` (or
+  `xdpgeneric`); remove it with `sudo ip link set enp2s0 xdp off`.
 - *Can't find module 'lcec_uspace'*: linuxcnc-ethercat was built without
   the userspace master in `/opt/ethercat-uspace`; install it and rebuild.
 - To check which driver a running LinuxCNC uses: `halcmd show comp | grep lcec`
