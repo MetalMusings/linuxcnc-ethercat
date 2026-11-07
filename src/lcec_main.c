@@ -142,7 +142,7 @@ static const char *lcec_uspace_socket_path(void) {
 /// The library creates the socket with mode 0660. Called with fsuid 0, so
 /// the socket would be root's; hand it to the user that runs LinuxCNC, so
 /// that the ethercat tool works without sudo. An extra group can be given
-/// access, the same way as ec_uspace_master --socket-group does.
+/// access, the same way as ec_master --socket-group does.
 static void lcec_uspace_socket_access(const char *path, uid_t user) {
   const char *group_name = getenv("LCEC_ETHERCAT_SOCKET_GROUP");
   gid_t gid = (gid_t)-1;
@@ -167,12 +167,12 @@ static void lcec_uspace_socket_access(const char *path, uid_t user) {
 
 static int lcec_uspace_lock_fd = -1;
 
-/// @brief True if process @p pid runs ec_uspace_master.
+/// @brief True if process @p pid runs the free-running ec_master daemon.
 ///
-/// Checked by the program file (/proc/PID/comm is cut at 15 characters).
-static int lcec_uspace_is_uspace_master(pid_t pid) {
+/// Checked by the program file, which tells it from rtapi_app.
+static int lcec_uspace_is_ec_master(pid_t pid) {
   char path[64], exe[256];
-  const char *name = "/ec_uspace_master";
+  const char *name = "/ec_master";
   ssize_t n;
 
   snprintf(path, sizeof(path), "/proc/%d/exe", (int)pid);
@@ -185,10 +185,9 @@ static int lcec_uspace_is_uspace_master(pid_t pid) {
 
 /// @brief Take the interface lock that the userspace masters share.
 ///
-/// ec_uspace_master holds EC_USPACE_LOCK_PATH_FMT while it owns the
-/// interface, also when the ethercat tool started it on demand. Such a master is asked
-/// to exit (SIGTERM), and the lock is taken once it has released the
-/// interface. Anything else that holds the lock (another LinuxCNC) is an
+/// The ec_master daemon ("ethercat start") holds EC_USPACE_LOCK_PATH_FMT
+/// while it owns the interface. Such a master is asked to exit (SIGTERM),
+/// and the lock is taken once it has released the interface. Anything else that holds the lock (another LinuxCNC) is an
 /// error. Called with fsuid 0, since the lock is in /run.
 static int lcec_uspace_take_interface(const char *interface) {
   char path[128], buf[32];
@@ -206,19 +205,19 @@ static int lcec_uspace_take_interface(const char *interface) {
       buf[n] = 0;
       holder = (pid_t)strtol(buf, NULL, 10);
     }
-    if (holder <= 0 || !lcec_uspace_is_uspace_master(holder)) {
+    if (holder <= 0 || !lcec_uspace_is_ec_master(holder)) {
       rtapi_print_msg(
           RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: %s is in use by process %d\n", interface, (int)holder);
       close(fd);
       return -1;
     }
     rtapi_print_msg(
-        RTAPI_MSG_INFO, LCEC_MSG_PFX "userspace master: stopping ec_uspace_master (pid %d) on %s\n", (int)holder, interface);
+        RTAPI_MSG_INFO, LCEC_MSG_PFX "userspace master: stopping ec_master (pid %d) on %s\n", (int)holder, interface);
     kill(holder, SIGTERM);
     for (i = 0; flock(fd, LOCK_EX | LOCK_NB) < 0; i++) {
       if (i >= 100) {
         rtapi_print_msg(
-            RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: ec_uspace_master (pid %d) did not release %s\n", (int)holder, interface);
+            RTAPI_MSG_ERR, LCEC_MSG_PFX "userspace master: ec_master (pid %d) did not release %s\n", (int)holder, interface);
         close(fd);
         return -1;
       }
@@ -265,7 +264,7 @@ static ec_master_t *lcec_request_master(lcec_master_t *master) {
     // rtapi_app is setuid root but keeps the user's fsuid, which may not
     // create the socket in /run. Use fsuid 0 while the library makes it.
     uid_t user = setfsuid(0);
-    // Before ecrt_lib_init(): it replaces the socket of an ec_uspace_master.
+    // Before ecrt_lib_init(): it replaces the socket of an ec_master daemon.
     if (lcec_uspace_take_interface(interface) < 0) {
       setfsuid(user);
       return NULL;
