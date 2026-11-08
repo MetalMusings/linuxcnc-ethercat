@@ -1,4 +1,4 @@
-.PHONY: all configure install clean test docs
+.PHONY: all configure install install-uspace clean test docs
 
 build: configure
 	@$(MAKE) -C src all
@@ -15,6 +15,11 @@ test:
 install: configure
 	@$(MAKE) -C src install
 	@$(MAKE) -C examples install-examples
+
+# lcec_uspace and its lcec_conf in the userspace master's prefix, for a
+# package (see install-uspace in src/Makefile).
+install-uspace: configure
+	@$(MAKE) -C src BUILD_KERNEL=no install-uspace
 
 configure: config.mk
 

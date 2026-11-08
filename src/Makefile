@@ -1,5 +1,5 @@
 all: all-deps realtime user
-.PHONY: all all-deps install install-user install-realtime user realtime all-tests test
+.PHONY: all all-deps install install-user install-realtime install-uspace user realtime all-tests test
 
 -include ../config.mk
 -include $(MODINC)
@@ -168,6 +168,33 @@ endif
 ifeq ($(BUILD_USPACE),yes)
 	cp lcec_uspace.so $(DESTDIR)$(RTLIBDIR)/
 endif
+
+## install-uspace: lcec_uspace kept apart from the system, for a package
+#
+# Installs lcec_uspace.so and lcec_conf in the userspace master's prefix
+# $(USPACE_ETHERCAT), next to the master, instead of in LinuxCNC's directories:
+#   $(USPACE_ETHERCAT)/lib/linuxcnc/modules/lcec_uspace.so
+#   $(USPACE_ETHERCAT)/bin/lcec_conf
+# The only file outside the prefix is a symlink
+# $(RTLIBDIR)/lcec_uspace.so, because rtapi_app loads modules from $(RTLIBDIR)
+# only. lcec_conf must be the one built here, linked against the userspace
+# master (BUILD_KERNEL=no): it knows the interface and transport attributes,
+# and lays out the configuration as lcec_uspace.so expects. A HAL file then
+# starts it with its full path:
+#   loadusr -W $(USPACE_ETHERCAT)/bin/lcec_conf ethercat-conf.xml
+#   loadrt lcec_uspace
+USPACE_MODDIR = $(USPACE_ETHERCAT)/lib/linuxcnc/modules
+
+install-uspace: lcec_uspace.so lcec_conf
+ifneq ($(BUILD_KERNEL),no)
+	$(error install-uspace needs lcec_conf linked against the userspace master: run "make clean" and build with BUILD_KERNEL=no)
+endif
+	@readelf -d lcec_conf | grep -q 'NEEDED.*libethercat\.so\.2' || \
+	  { echo "lcec_conf is linked against the kernel master: run \"make clean\" first"; false; }
+	install -d $(DESTDIR)$(USPACE_MODDIR) $(DESTDIR)$(USPACE_ETHERCAT)/bin $(DESTDIR)$(RTLIBDIR)
+	install -m 644 lcec_uspace.so $(DESTDIR)$(USPACE_MODDIR)/
+	install -m 755 lcec_conf $(DESTDIR)$(USPACE_ETHERCAT)/bin/
+	ln -sf $(USPACE_MODDIR)/lcec_uspace.so $(DESTDIR)$(RTLIBDIR)/lcec_uspace.so
 
 lcec.so: lcec_main.o $(lcec-common-objs) liblcecdevices.a
 	$(ECHO) Linking $@
