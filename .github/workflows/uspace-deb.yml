@@ -1,0 +1,97 @@
+# Builds linuxcnc-ethercat-uspace_*.deb (the userspace EtherCAT master and
+# lcec_uspace, see INSTALL-USPACE.md) for Debian 12 and 13, with
+# scripts/build-uspace-deb.sh.
+#
+# - "Run workflow" on the Actions tab: the packages are kept as artifacts of
+#   the run (90 days, downloadable when logged in).
+# - A pushed tag v* (git tag v0.1 && git push github v0.1): the packages are
+#   also put on a release for the tag.
+#
+# The packages are built against LinuxCNC 2.9.4, so that they need 2.9.4 or
+# newer: from linuxcnc.org on Debian 12, and Debian's own on Debian 13.
+
+name: Userspace master package
+
+on:
+  workflow_dispatch:
+    inputs:
+      master_branch:
+        description: Branch of MetalMusings/ethercat (the userspace master)
+        default: uspace-tool-ipc-fixes
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - debian: bookworm
+            linuxcnc: '=1:2.9.4'
+          - debian: trixie
+            linuxcnc: '=1:2.9.4-2'
+    container: debian:${{ matrix.debian }}
+    steps:
+      - name: Build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential git autoconf automake libtool pkg-config \
+            libxdp-dev libbpf-dev libexpat1-dev dpkg-dev file \
+            ca-certificates curl gnupg dirmngr
+
+      - name: LinuxCNC 2.9 (linuxcnc.org on Debian 12)
+        if: matrix.debian == 'bookworm'
+        run: |
+          export GNUPGHOME=$(mktemp -d)
+          gpg --keyserver hkp://keyserver.ubuntu.com --recv-key 3cb9fd148f374fef
+          gpg --export 'EMC Archive Signing Key' > /usr/share/keyrings/linuxcnc-old.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/linuxcnc-old.gpg] https://www.linuxcnc.org/ bookworm base 2.9-uspace" \
+            > /etc/apt/sources.list.d/linuxcnc.list
+          apt-get update
+
+      - name: linuxcnc-uspace-dev ${{ matrix.linuxcnc }}
+        run: |
+          apt-get install -y --no-install-recommends \
+            linuxcnc-uspace${{ matrix.linuxcnc }} linuxcnc-uspace-dev${{ matrix.linuxcnc }}
+
+      - uses: actions/checkout@v4
+
+      - name: Build the package
+        run: |
+          # The checkout belongs to another user than the container's root.
+          git config --global --add safe.directory '*'
+          scripts/build-uspace-deb.sh \
+            -b "${{ inputs.master_branch || 'uspace-tool-ipc-fixes' }}" -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.debian }}
+          path: out/*.deb
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Release ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/*.deb \
+            --repo "${{ github.repository }}" \
+            --title "Userspace EtherCAT master ${{ github.ref_name }}" \
+            --notes "Packages of the userspace EtherCAT master and lcec_uspace for LinuxCNC 2.9.4 or newer: debian12 for Debian 12 (bookworm), debian13 for Debian 13 (trixie). See [INSTALL-USPACE.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/INSTALL-USPACE.md)."
