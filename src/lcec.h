@@ -217,6 +217,7 @@ typedef struct lcec_master {
   int index;                        ///< Index of this mater.
   char name[LCEC_CONF_STR_MAXLEN];  ///< Name of master.
   char interface[LCEC_CONF_STR_MAXLEN];  ///< Network interface for the userspace master; empty if not given.
+  char transport[LCEC_CONF_STR_MAXLEN];  ///< Transport for the userspace master; empty if not given.
   ec_master_t *master;              ///< EtherCAT master structure.
   unsigned long mutex;              ///< Mutex for locking operations.
   ec_pdo_entry_reg_t *pdo_entry_regs;

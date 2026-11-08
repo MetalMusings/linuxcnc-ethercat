@@ -237,11 +237,12 @@ static int lcec_uspace_take_interface(const char *interface) {
 /// The kernel master gets its network interface from /etc/ethercat.conf.
 /// Here it comes from the master's "interface" attribute in the XML file, or
 /// else from the environment variable LCEC_ETHERCAT_INTERFACE (for example
-/// enp2s0). LCEC_ETHERCAT_TRANSPORT selects the transport (default "raw").
+/// enp2s0). The transport comes from the "transport" attribute, or else from
+/// LCEC_ETHERCAT_TRANSPORT (default "raw").
 /// Only master index 0 is supported.
 static ec_master_t *lcec_request_master(lcec_master_t *master) {
   const char *interface = master->interface[0] ? master->interface : getenv("LCEC_ETHERCAT_INTERFACE");
-  const char *transport_name = getenv("LCEC_ETHERCAT_TRANSPORT");
+  const char *transport_name = master->transport[0] ? master->transport : getenv("LCEC_ETHERCAT_TRANSPORT");
   ec_transport_t *transport;
   ec_master_t *ec_master;
 
@@ -421,6 +422,10 @@ static ec_master_t *lcec_request_master(lcec_master_t *master) {
   if (master->interface[0]) {
     rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: interface=\"%s\" is only used by lcec_uspace; the kernel master takes its interface from ethercat.conf\n",
         master->name, master->interface);
+  }
+  if (master->transport[0]) {
+    rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: transport=\"%s\" is only used by lcec_uspace\n",
+        master->name, master->transport);
   }
   return ecrt_request_master(master->index);
 }
@@ -801,6 +806,8 @@ int lcec_parse_config(void) {
         master->name[LCEC_CONF_STR_MAXLEN - 1] = 0;
         strncpy(master->interface, master_conf->interface, LCEC_CONF_STR_MAXLEN);
         master->interface[LCEC_CONF_STR_MAXLEN - 1] = 0;
+        strncpy(master->transport, master_conf->transport, LCEC_CONF_STR_MAXLEN);
+        master->transport[LCEC_CONF_STR_MAXLEN - 1] = 0;
         master->app_time_period = master_conf->appTimePeriod;
         master->sync_ref_cycles = master_conf->refClockSyncCycles;
         // sync_to_ref_clock controls clock sync direction:

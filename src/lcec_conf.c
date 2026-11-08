@@ -278,6 +278,13 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
       continue;
     }
 
+    // parse transport (only used by lcec_uspace)
+    if (strcmp(name, "transport") == 0) {
+      strncpy(p->transport, val, LCEC_CONF_STR_MAXLEN);
+      p->transport[LCEC_CONF_STR_MAXLEN - 1] = 0;
+      continue;
+    }
+
     // parse appTimePeriod
     if (strcmp(name, "appTimePeriod") == 0) {
       p->appTimePeriod = atol(val);
