@@ -70,6 +70,14 @@ and some of which are required:
   master. It must be less than `appTimePeriod`. It should be larger than the time
   until lcec's `write` has sent the frame. See
   [distributed-clocks.md](distributed-clocks.md).
+- `interface="<name>"`: (optional, only used by `lcec_uspace`) the
+  network interface of the EtherCAT bus for the userspace master, for
+  example `enp2s0`. The kernel master takes it from
+  `/etc/ethercat.conf` instead.
+- `transport="raw|xdp-native|xdp-skb"`: (optional, only used by
+  `lcec_uspace`, default `raw`) how the userspace master sends and
+  receives frames. See "Userspace EtherCAT master" in the
+  [README](../README.md).
 
 Generally, for "normal" systems, this will look like 
 

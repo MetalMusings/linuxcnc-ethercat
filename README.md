@@ -38,7 +38,8 @@ These instructions install the kernel-mode master and `lcec`. The
 userspace master and `lcec_uspace` are not packaged; to use them
 instead, or in addition, build them as described in
 [Building](#building) under [Userspace EtherCAT master
-(lcec_uspace)](#userspace-ethercat-master-lcec_uspace).
+(lcec_uspace)](#userspace-ethercat-master-lcec_uspace). To try the
+userspace master from a package, see [INSTALL-USPACE.md](INSTALL-USPACE.md).
 
 ### Initial setup
 
@@ -318,12 +319,14 @@ the original, and change three things (and optionally a fourth, the transport):
   attribute is missing. Only master 0 is supported. `lcec` ignores the
   attribute.
 
-- Optionally, choose the transport with the environment variable
-  `LCEC_ETHERCAT_TRANSPORT`, for example in the start script (see below):
+- Optionally, choose the transport on the master as well:
 
-  ```bash
-  export LCEC_ETHERCAT_TRANSPORT=xdp-native
+  ```XML
+  <master idx="0" interface="enp2s0" transport="xdp-native" appTimePeriod="1000000" refClockSyncCycles="-1000">
   ```
+
+  The environment variable `LCEC_ETHERCAT_TRANSPORT` is used when the
+  attribute is missing, for example from the start script (see below).
 
   | Transport | |
   |---|---|
