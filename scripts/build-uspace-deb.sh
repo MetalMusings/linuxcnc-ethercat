@@ -125,7 +125,9 @@ install -m 644 "$WORK/lcec/LICENSE" "$ROOT$PREFIX/share/doc/LICENSE.linuxcnc-eth
 step "Control file"
 . /etc/os-release
 ARCH=$(dpkg --print-architecture)
-VERSION=$BASE_VERSION+git$(date +%Y%m%d).$LCEC_REV.$MASTER_REV~$ID$VERSION_ID
+# The date is UTC, as on the CI machines, so that a local build late in the
+# evening does not get a later date than a release built at the same time.
+VERSION=$BASE_VERSION+git$(date -u +%Y%m%d).$LCEC_REV.$MASTER_REV~$ID$VERSION_ID
 MAINTAINER="$(git -C "$WORK/lcec" log -1 --format='%an <%ae>')"
 
 # Library dependencies of the binaries, without libethercat.so.2 (in the
