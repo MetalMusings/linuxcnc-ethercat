@@ -4,8 +4,9 @@
 #
 # - "Run workflow" on the Actions tab: the packages are kept as artifacts of
 #   the run (90 days, downloadable when logged in).
-# - A pushed tag v* (git tag v0.1 && git push github v0.1): the packages are
-#   also put on a release for the tag.
+# - A pushed tag uspace-v* (git tag uspace-v0.1 && git push github
+#   uspace-v0.1): the packages are also put on a release for the tag. The
+#   prefix keeps these apart from linuxcnc-ethercat's own v* tags.
 #
 # The packages are built against LinuxCNC 2.9.4 and need 2.9.4 or newer: from
 # linuxcnc.org on Debian 12, and Debian's own 2.9.4 on Debian 13.
@@ -19,7 +20,7 @@ on:
         description: Branch of MetalMusings/ethercat (the userspace master)
         default: uspace-tool-ipc-fixes
   push:
-    tags: ['v*']
+    tags: ['uspace-v*']
 
 permissions:
   contents: read
@@ -76,7 +77,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/uspace-v')
     needs: deb
     runs-on: ubuntu-latest
     permissions:
