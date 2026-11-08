@@ -23,7 +23,7 @@ set -euo pipefail
 
 PKG=linuxcnc-ethercat-uspace
 PREFIX=/opt/$PKG
-BASE_VERSION=0.1
+BASE_VERSION=0.3
 
 MASTER_SRC=https://github.com/MetalMusings/ethercat
 MASTER_BRANCH=uspace-tool-ipc-fixes
@@ -88,11 +88,14 @@ make -s -C "$WORK/lcec" install-uspace USPACE_ETHERCAT=$PREFIX \
     >"$WORK/lcec.log" 2>&1 || { tail -30 "$WORK/lcec.log"; exit 1; }
 
 step "Package tree"
-install -d "$ROOT$PREFIX/bin" "$ROOT$PREFIX/lib" "$ROOT$PREFIX/etc" \
+install -d "$ROOT$PREFIX/bin" "$ROOT$PREFIX/lib" "$ROOT$PREFIX/etc" "$ROOT$PREFIX/include" \
     "$ROOT$PREFIX/share/doc" "$ROOT/usr/bin" "$ROOT/DEBIAN"
 install -m 755 "$MASTER_ROOT$PREFIX/bin/ec_master" \
     "$MASTER_ROOT$PREFIX/bin/ethercat" "$ROOT$PREFIX/bin/"
 cp -a "$MASTER_ROOT$PREFIX"/lib/libethercat.so.2* "$ROOT$PREFIX/lib/"
+# The master's headers, so that other HAL components (such as ecat) can be
+# built against the package: they link libethercat.so.2 by its full name.
+install -m 644 "$MASTER_ROOT$PREFIX"/include/*.h "$ROOT$PREFIX/include/"
 strip --strip-unneeded "$ROOT$PREFIX"/bin/* "$ROOT$PREFIX"/lib/libethercat.so.2.* \
     "$ROOT$PREFIX"/lib/linuxcnc/modules/lcec_uspace.so
 ln -s $PREFIX/bin/ethercat "$ROOT/usr/bin/ethercat-uspace"
