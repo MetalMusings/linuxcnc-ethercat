@@ -92,7 +92,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Pre-release while the userspace master is experimental.
           gh release create "${{ github.ref_name }}" out/*.deb \
-            --repo "${{ github.repository }}" \
+            --repo "${{ github.repository }}" --prerelease \
             --title "Userspace EtherCAT master ${{ github.ref_name }}" \
             --notes "Packages of the userspace EtherCAT master and lcec_uspace for LinuxCNC 2.9.4 or newer: debian12 for Debian 12 (bookworm), debian13 for Debian 13 (trixie). See [INSTALL-USPACE.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/INSTALL-USPACE.md)."
