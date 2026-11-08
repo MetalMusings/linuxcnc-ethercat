@@ -136,6 +136,9 @@ SHLIBS=$(cd "$WORK/shlibs" && dpkg-shlibdeps -O --ignore-missing-info \
     "$ROOT$PREFIX"/bin/* "$ROOT$PREFIX"/lib/libethercat.so.2.* \
     "$ROOT$PREFIX"/lib/linuxcnc/modules/lcec_uspace.so 2>/dev/null \
     | sed -n 's/^shlibs:Depends=//p')
+# Only the upstream version of LinuxCNC counts: the HAL interface is the same
+# in Debian's own revisions (1:2.9.4-2+deb13u1) and linuxcnc.org's (1:2.9.4).
+SHLIBS=$(echo "$SHLIBS" | sed -E 's/(linuxcnc-uspace \(>= [^)-]*)-[^)]*\)/\1)/')
 case "$SHLIBS" in
     *linuxcnc-uspace*) ;;
     *) SHLIBS="linuxcnc-uspace (>= 1:2.9), $SHLIBS" ;;

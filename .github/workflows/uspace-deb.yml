@@ -7,8 +7,8 @@
 # - A pushed tag v* (git tag v0.1 && git push github v0.1): the packages are
 #   also put on a release for the tag.
 #
-# The packages are built against LinuxCNC 2.9.4, so that they need 2.9.4 or
-# newer: from linuxcnc.org on Debian 12, and Debian's own on Debian 13.
+# The packages are built against LinuxCNC 2.9.4 and need 2.9.4 or newer: from
+# linuxcnc.org on Debian 12, and Debian's own 2.9.4 on Debian 13.
 
 name: Userspace master package
 
@@ -34,7 +34,7 @@ jobs:
           - debian: bookworm
             linuxcnc: '=1:2.9.4'
           - debian: trixie
-            linuxcnc: '=1:2.9.4-2'
+            linuxcnc: ''  # Debian's own 2.9.4 with its updates
     container: debian:${{ matrix.debian }}
     steps:
       - name: Build tools
