@@ -26,21 +26,28 @@ EXTRA_CFLAGS += -Wall # Increase debugging level
 # built. They only need ecrt.h's types and a few helpers, not a running master.
 USPACE_ETHERCAT ?= /opt/ethercat-uspace
 
+# A package build can install the master in a staging directory
+# (make install DESTDIR=...) instead of in $(USPACE_ETHERCAT): give that
+# directory as USPACE_SYSROOT. Headers and libraries are then taken from
+# there, while the run-time paths (rpath) stay in $(USPACE_ETHERCAT).
+USPACE_SYSROOT ?=
+USPACE_BUILD := $(USPACE_SYSROOT)$(USPACE_ETHERCAT)
+
 BUILD_KERNEL ?= auto
 ifeq ($(BUILD_KERNEL),auto)
   BUILD_KERNEL := $(if $(wildcard /usr/include/ecrt.h /usr/local/include/ecrt.h),yes,no)
 endif
 BUILD_USPACE ?= auto
 ifeq ($(BUILD_USPACE),auto)
-  BUILD_USPACE := $(if $(wildcard $(USPACE_ETHERCAT)/include/ecrt.h),yes,no)
+  BUILD_USPACE := $(if $(wildcard $(USPACE_BUILD)/include/ecrt.h),yes,no)
 endif
 
 ifeq ($(BUILD_KERNEL),yes)
   USER_ETHERCAT_LIBS := -lethercat
 else ifeq ($(BUILD_USPACE),yes)
   # All objects, not only *.uspace.o, are compiled against the userspace ecrt.h.
-  EXTRA_CFLAGS += -I$(USPACE_ETHERCAT)/include
-  USER_ETHERCAT_LIBS := -L$(USPACE_ETHERCAT)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2
+  EXTRA_CFLAGS += -I$(USPACE_BUILD)/include
+  USER_ETHERCAT_LIBS := -L$(USPACE_BUILD)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2
 else
   $(error No EtherCAT master found: install the IgH kernel master (ecrt.h in /usr/include or /usr/local/include), or the userspace master in USPACE_ETHERCAT=$(USPACE_ETHERCAT))
 endif
@@ -109,7 +116,7 @@ uspace-device-objs := $(device-objs:.o=.uspace.o)
 # EXTRA_CFLAGS cannot carry it: Makefile.modinc assigns it with :=.
 %.uspace.o: %.c
 	@$(ECHO) Compiling realtime $< for lcec_uspace
-	@$(Q)$(CC) -o $@ $(EXTRA_CFLAGS) -I$(USPACE_ETHERCAT)/include -MMD -MP -c $<
+	@$(Q)$(CC) -o $@ $(EXTRA_CFLAGS) -I$(USPACE_BUILD)/include -MMD -MP -c $<
 
 -include $(uspace-objs:.o=.d) $(uspace-device-objs:.o=.d)
 
@@ -124,7 +131,7 @@ lcec_uspace.so: $(uspace-objs) liblcecdevices_uspace.a
 	(echo '{ global : '; tr -s '\0' < $@.sym | xargs -r0 printf '%s;\n' | grep .; echo 'local : * ; };') > $@.ver
 	$(CC) -shared -Bsymbolic $(RTLDFLAGS) -Wl,--version-script,$@.ver -o $@ $(uspace-objs) -lm \
 	  -Wl,--whole-archive liblcecdevices_uspace.a -Wl,--no-whole-archive -L$(LIBDIR) -llinuxcnchal \
-	  -L$(USPACE_ETHERCAT)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2 -lpthread -lrt
+	  -L$(USPACE_BUILD)/lib -Wl,-rpath,$(USPACE_ETHERCAT)/lib -l:libethercat.so.2 -lpthread -lrt
 	chmod -x $@
 
 
