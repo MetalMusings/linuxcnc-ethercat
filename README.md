@@ -15,6 +15,15 @@ This tree was forked from
 [sittner/linuxcnc-ethercat](https://github.com/sittner/linuxcnc-ethercat)
 in 2023, and is the new home for most LinuxCNC EtherCAT development.
 
+> **Development has moved to [ecat](https://github.com/MetalMusings/ecat)
+> (2026-11-10).** In this fork (MetalMusings/linuxcnc-ethercat), the
+> userspace work continues in ecat: a HAL component and a setup program
+> on the same userspace master, without XML files (lcec XML files can be
+> imported). `lcec_uspace` here is frozen. The userspace master
+> ([MetalMusings/ethercat](https://github.com/MetalMusings/ethercat)) is
+> still developed, and its package `linuxcnc-ethercat-uspace` is for now
+> still built from this repository.
+
 This version lets you choose between two EtherCAT masters: IgH's
 kernel-mode master, loaded as `lcec` as before, or a userspace master
 that runs inside LinuxCNC without a kernel module, loaded as
