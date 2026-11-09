@@ -229,6 +229,35 @@ the clocks is large. Increasing `pll-step` might help. `pll-step` is limited
 to 1% of appTimePeriod.
 
 
+### DC sync check
+
+When a DC slave is configured, before SYNC0 is started, the EtherCAT
+master waits until the slave's clock is within 10 us of the reference
+clock, for at most 5 seconds. If it is not, the master logs "Slave did
+not sync after 5000 ms" and starts SYNC0 anyway, on a clock that is
+still off. Drives then often leave OP with AL status 0x001A
+"Synchronization error", or run with SYNC0 at the wrong time until
+their clock has been pulled in.
+
+lcec shows this in HAL (with the userspace master, `lcec_uspace`; with
+the kernel master the pins stay false):
+
+- `lcec.<master>.<slave>.slave-dc-sync-failed` OUT: this slave's last
+  DC sync check timed out. Cleared when a later configuration passes it.
+- `lcec.<master>.dc-sync-failed` OUT: any slave of this master.
+- `lcec.dc-sync-failed` OUT: any slave of any master.
+
+For example, keep the machine from being switched on:
+
+```
+net dc-failed lcec.dc-sync-failed => not.0.in
+net dc-ok     not.0.out => and2.0.in1    # in the machine-on / E-stop chain
+```
+
+With the userspace master in package 0.5 or later, the check passes
+within a fraction of a second; a timeout points to a real problem, such
+as a cable, the reference clock, or a slave whose clock is not stable.
+
 ## Slave settings
 
 Each slave in LCEC has its own (optional) distributed clock config,

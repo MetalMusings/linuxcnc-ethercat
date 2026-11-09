@@ -190,6 +190,7 @@ typedef struct lcec_master_data {
   hal_bit_t *state_op;
   hal_bit_t *link_up;
   hal_bit_t *all_op;
+  hal_bit_t *dc_sync_failed;       ///< A slave's DC sync check timed out (userspace master only).
 #ifdef RTAPI_TASK_PLL_SUPPORT
   hal_s32_t *pll_err;
   hal_s32_t *pll_out;
@@ -214,6 +215,7 @@ typedef struct lcec_slave_state {
   hal_bit_t *state_preop;   ///< Is the device in state `PREOP`?  Equivalant to the `.slave-state-preop` HAL pin.
   hal_bit_t *state_safeop;  ///< Is the device in state `SAFEOP`?  Equivalant to the `.slave-state-safeop` HAL pin.
   hal_bit_t *state_op;      ///< Is the device in state `OP`?  Equivalant to the `.slave-state-op` HAL pin.
+  hal_bit_t *dc_sync_failed;  ///< The slave's DC sync check timed out; SYNC0 runs on an unsynchronized clock.
 } lcec_slave_state_t;
 
 typedef struct lcec_master {
@@ -240,6 +242,7 @@ typedef struct lcec_master {
   int sync_to_ref_clock;
   uint32_t global_shift_time;       ///< SYNC0 offset from the nominal servo thread start (ns).
   int auto_shift;                   ///< globalShiftTime="auto": global_shift_time is chosen at run time.
+  int dc_sync_failed;               ///< A slave's DC sync check timed out (see ec_slave_config_state_t).
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
