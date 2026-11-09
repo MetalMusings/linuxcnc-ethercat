@@ -23,7 +23,7 @@ set -euo pipefail
 
 PKG=linuxcnc-ethercat-uspace
 PREFIX=/opt/$PKG
-BASE_VERSION=0.7
+BASE_VERSION=0.8
 
 MASTER_SRC=https://github.com/MetalMusings/ethercat
 MASTER_BRANCH=uspace-tool-ipc-fixes
