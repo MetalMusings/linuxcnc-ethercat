@@ -171,11 +171,14 @@ between the masters](#running-and-switching-between-the-masters).
    ```
 
    This is [stratuMAK/ethercat](https://github.com/stratuMAK/ethercat)
-   with the changes that the `ethercat` tool needs (see [The ethercat
-   tool](#the-ethercat-tool)), which are not yet in stratuMAK's version.
-   With stratuMAK's version `lcec_uspace` works as described, but
-   `ethercat domains` and `ethercat data` fail, and the tool has no
-   `start` or `stop`.
+   with changes that are not yet in stratuMAK's version: what the
+   `ethercat` tool needs (see [The ethercat tool](#the-ethercat-tool)),
+   corrected DC system time offsets and a reported failed DC sync check,
+   and `ecrt_master_request_al_state()` for an orderly stop (see [When
+   LinuxCNC stops](#when-linuxcnc-stops)). With stratuMAK's version
+   `lcec_uspace` builds and runs, but `ethercat domains` and `ethercat
+   data` fail, the tool has no `start` or `stop`, and the slaves stop
+   with an error when LinuxCNC stops.
 
    Check that the XDP transports were built:
 
@@ -424,6 +427,34 @@ ExecStartPre=-/opt/ethercat-uspace/bin/ethercat stop
 ```
 
 followed by `sudo systemctl daemon-reload`.
+
+### When LinuxCNC stops
+
+`lcec_uspace` stops the bus in order by itself: every output becomes
+zero and the slaves go to PREOP while process data still flows. Without
+that, the slaves would lose their process data in OP and stop with an
+error (sync manager watchdog 0x001B, synchronization error 0x001A), and
+CiA 402 drives would latch a communication fault (0x7500 on the
+Rtelligent ECT60, after one or two missed cycles) that must be reset
+before they run again. Nothing is needed in the HAL files or in
+`[HAL]SHUTDOWN`.
+
+LinuxCNC stops the servo thread (`halcmd stop`) and unloads the
+components right after. A stop guard, a realtime task with the servo
+period beside the servo thread, sends the process data unchanged when
+`lcec.write-all` is more than a quarter period late; after 10 such
+cycles in a row it sets every output to zero and takes the slaves to
+PREOP, and unloading waits for it (at most a second).
+`lcec.0.guard-state` shows it (0 the servo thread runs, 1 taking the
+slaves down, 2 done), and `lcec.0.guard-cycles` counts the cycles it
+sent; while the machine runs that stays 0. `lcec.take-down` does the
+same on request while the thread runs; `lcec-take-down` sets it and
+waits for PREOP.
+
+This needs the master fork's `ecrt_master_request_al_state()`
+(`linuxcnc-ethercat-uspace` 0.7 or newer; the guard itself 0.8). After
+`halcmd stop` and `start` by hand, DC slaves stop in SAFEOP with a
+synchronization error, as they did before: restart LinuxCNC instead.
 
 ### The ethercat tool
 

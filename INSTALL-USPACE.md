@@ -72,7 +72,8 @@ realtime task beside the servo thread, sends the process data when
 `lcec.write-all` is late, and takes the slaves down after 10 cycles
 without the servo thread; `lcec.0.guard-state` and `lcec.0.guard-cycles`
 show it. `lcec.take-down`, set by `lcec-take-down`, does the same on
-request.
+request. Nothing is needed in `[HAL]SHUTDOWN`. More in
+[README.md](README.md#when-linuxcnc-stops).
 
 ## 5. Run
 
