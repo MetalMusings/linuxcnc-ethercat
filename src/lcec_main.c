@@ -34,6 +34,13 @@ MODULE_LICENSE("GPL")
 MODULE_AUTHOR("Sascha Ittner <sascha.ittner@modusoft.de>")
 MODULE_DESCRIPTION("Driver for EtherCAT devices")
 
+#if defined(EC_USPACE_MASTER) && defined(EC_HAVE_REQUEST_AL_STATE)
+/// The stop guard (see lcec_guard_tick()) needs the userspace master and
+/// ecrt_master_request_al_state().
+#define LCEC_HAVE_GUARD
+static void lcec_start_guard(lcec_master_t *master);
+#endif
+
 /// @brief Global HAL Pins
 static const lcec_pindesc_t master_global_pins[] = {
     {HAL_U32, HAL_OUT, offsetof(lcec_master_data_t, slaves_responding), "%s.slaves-responding"},
@@ -58,6 +65,10 @@ static const lcec_pindesc_t master_pins[] = {
     {HAL_S32, HAL_OUT, offsetof(lcec_master_data_t, send_offset), "%s.send-offset"},
     {HAL_U32, HAL_OUT, offsetof(lcec_master_data_t, shift_time), "%s.shift-time"},
     {HAL_S32, HAL_OUT, offsetof(lcec_master_data_t, turnaround_cycles), "%s.turnaround-cycles"},
+#endif
+#if defined(EC_USPACE_MASTER) && defined(EC_HAVE_REQUEST_AL_STATE)
+    {HAL_S32, HAL_OUT, offsetof(lcec_master_data_t, guard_state), "%s.guard-state"},
+    {HAL_U32, HAL_OUT, offsetof(lcec_master_data_t, guard_cycles), "%s.guard-cycles"},
 #endif
     {HAL_TYPE_UNSPECIFIED, HAL_DIR_UNSPECIFIED, -1, NULL},
 };
@@ -344,6 +355,9 @@ static void *lcec_activator_main(void *arg) {
   rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s activated in %lld us (helper thread)\n", master->name, (rtapi_get_time() - t0) / 1000);
 
   __atomic_store_n(&master->activated, 1, __ATOMIC_RELEASE);
+#ifdef LCEC_HAVE_GUARD
+  lcec_start_guard(master);
+#endif
   return NULL;
 }
 
@@ -386,6 +400,157 @@ static void lcec_stop_activator(lcec_master_t *master) {
   free(act);
   master->activator = NULL;
 }
+
+#ifdef LCEC_HAVE_GUARD
+/// The RTAPI module that owns the stop guards' tasks.
+static int lcec_guard_module = -1;
+
+/// The stop guard: an orderly stop without a [HAL]SHUTDOWN script.
+///
+/// When LinuxCNC (or "halcmd stop") stops the threads, the servo thread no
+/// longer calls lcec.write-all, and nothing more happens on the bus until
+/// the component is unloaded. Slaves in OP lose their process data and stop
+/// in SAFEOP + ERROR (sync manager watchdog 0x001B, synchronization error
+/// 0x001A); CiA 402 drives latch a communication fault (0x7500 on the
+/// ECT60, which does so after one or two missed cycles).
+///
+/// The guard is an RTAPI task with the servo period, running beside the
+/// servo thread. When a write is more than a quarter period late, it sends
+/// the process data itself, unchanged: during a latency spike that is no
+/// more than a repeated cycle. After LCEC_GUARD_STOP_CYCLES such cycles in
+/// a row, the servo thread has stopped: the guard sets every output to zero
+/// and takes the slaves to PREOP, and stops sending once no slave is above
+/// PREOP (or after LCEC_GUARD_TIMEOUT). rtapi_app_exit() waits for it. If
+/// the servo thread runs again ("halcmd start"), lcec_guard_resumed() takes
+/// the slaves back to OP.
+static void lcec_guard_tick(lcec_master_t *master) {
+  long long period = master->app_time_period;
+  long long now, last;
+  ec_master_state_t ms;
+  int state;
+
+  if (master->hal_data != NULL) {
+    *(master->hal_data->guard_state) = __atomic_load_n(&master->guard_state, __ATOMIC_ACQUIRE);
+  }
+  if (!__atomic_load_n(&master->activated, __ATOMIC_ACQUIRE) || period <= 0) {
+    return;
+  }
+  state = __atomic_load_n(&master->guard_state, __ATOMIC_ACQUIRE);
+  last = __atomic_load_n(&master->last_cycle, __ATOMIC_ACQUIRE);
+  now = rtapi_get_time();
+  if (state == LCEC_GUARD_DONE || last == 0) {
+    return;
+  }
+  if (now - last <= period + period / 4) {
+    master->guard_missed = 0;
+    return;
+  }
+
+  rtapi_mutex_get(&master->mutex);
+  // the servo thread may have run meanwhile
+  if (now - __atomic_load_n(&master->last_cycle, __ATOMIC_ACQUIRE) <= period + period / 4) {
+    rtapi_mutex_give(&master->mutex);
+    master->guard_missed = 0;
+    return;
+  }
+  if (state == LCEC_GUARD_IDLE && ++master->guard_missed >= LCEC_GUARD_STOP_CYCLES) {
+    ecrt_master_request_al_state(master->master, EC_AL_STATE_PREOP);
+    master->guard_start = now;
+    state = LCEC_GUARD_TAKING;
+    __atomic_store_n(&master->guard_state, state, __ATOMIC_RELEASE);
+  }
+  ecrt_master_receive(master->master);
+  ecrt_domain_process(master->domain);
+  if (state == LCEC_GUARD_TAKING && master->process_data != NULL) {
+    memset(master->process_data, 0, master->process_data_len);
+  }
+  ecrt_domain_queue(master->domain);
+  ecrt_master_application_time(master->master, master->app_time_base + now);
+  ecrt_master_sync_slave_clocks(master->master);
+  ecrt_master_send(master->master);
+  memset(&ms, 0, sizeof(ms));
+  ecrt_master_state(master->master, &ms);
+  rtapi_mutex_give(&master->mutex);
+  if (master->hal_data != NULL) {
+    (*(master->hal_data->guard_cycles))++;
+  }
+
+  if (state == LCEC_GUARD_TAKING && ((ms.al_states & 0x0C) == 0 || now - master->guard_start > LCEC_GUARD_TIMEOUT)) {
+    __atomic_store_n(&master->guard_state, LCEC_GUARD_DONE, __ATOMIC_RELEASE);
+    rtapi_print_msg((ms.al_states & 0x0C) == 0 ? RTAPI_MSG_INFO : RTAPI_MSG_ERR,
+        LCEC_MSG_PFX "master %s: the servo thread stopped; %s after %lld ms, outputs zero\n", master->name,
+        (ms.al_states & 0x0C) == 0 ? "slaves taken to PREOP" : "slaves still above PREOP",
+        (now - master->guard_start) / 1000000);
+  }
+}
+
+static void lcec_guard_task(void *arg) {
+  for (;;) {
+    lcec_guard_tick((lcec_master_t *)arg);
+    rtapi_wait();
+  }
+}
+
+/// Create a master's stop guard (from rtapi_app_main). It is started once
+/// the master is active and the period is known.
+static void lcec_create_guard(lcec_master_t *master) {
+  master->guard_task = -1;
+  if (lcec_guard_module < 0) {
+    lcec_guard_module = rtapi_init(LCEC_MODULE_NAME "_guard");
+    if (lcec_guard_module < 0) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "no stop guard: rtapi_init failed\n");
+      return;
+    }
+  }
+  master->guard_task = rtapi_task_new(lcec_guard_task, master, rtapi_prio_next_higher(rtapi_prio_lowest()),
+      lcec_guard_module, 65536, RTAPI_USES_FP);
+  if (master->guard_task < 0) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: no stop guard (rtapi_task_new %d)\n", master->name, master->guard_task);
+    master->guard_task = -1;
+  }
+}
+
+static void lcec_start_guard(lcec_master_t *master) {
+  int ret;
+  if (master->guard_task < 0) {
+    return;
+  }
+  ret = rtapi_task_start(master->guard_task, master->app_time_period);
+  if (ret != 0) {
+    rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: stop guard not started (%d)\n", master->name, ret);
+  }
+}
+
+static void lcec_delete_guard(lcec_master_t *master) {
+  const struct timespec tick = {0, 5 * 1000 * 1000};
+  long long end = rtapi_get_time() + LCEC_GUARD_TIMEOUT + (LCEC_GUARD_STOP_CYCLES + 10) * (long long)master->app_time_period;
+
+  // "halcmd stop" comes just before unloading: let the guard finish taking
+  // the slaves to PREOP first
+  while (master->guard_task >= 0 && __atomic_load_n(&master->activated, __ATOMIC_ACQUIRE) &&
+         __atomic_load_n(&master->guard_state, __ATOMIC_ACQUIRE) != LCEC_GUARD_DONE && rtapi_get_time() < end) {
+    nanosleep(&tick, NULL);
+  }
+  if (master->guard_task >= 0) {
+    rtapi_task_pause(master->guard_task);
+    rtapi_task_delete(master->guard_task);
+    master->guard_task = -1;
+  }
+}
+
+/// In the servo thread: it runs, and the guard took over meanwhile (halcmd
+/// stop, then start): the slaves go back to OP.
+static void lcec_guard_resumed(lcec_master_t *master) {
+  if (__atomic_load_n(&master->guard_state, __ATOMIC_ACQUIRE) == LCEC_GUARD_IDLE) {
+    return;
+  }
+  __atomic_store_n(&master->guard_state, LCEC_GUARD_IDLE, __ATOMIC_RELEASE);
+  if (!master->taking_down) {
+    ecrt_master_request_al_state(master->master, EC_AL_STATE_OP);
+  }
+  rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: the servo thread runs again; slaves to OP\n", master->name);
+}
+#endif
 
 /// Deactivate a userspace master and wait until its slaves are in PREOP.
 ///
@@ -489,6 +654,9 @@ int rtapi_app_main(void) {
       rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: cannot start the activation thread\n", master->name);
       goto fail2;
     }
+#ifdef LCEC_HAVE_GUARD
+    lcec_create_guard(master);
+#endif
 #endif
 
 #ifdef __KERNEL__
@@ -712,6 +880,9 @@ void rtapi_app_exit(void) {
   for (master = first_master; master != NULL; master = master->next) {
 #ifdef EC_USPACE_MASTER
     lcec_stop_activator(master);  // lets an activation in progress finish first
+#ifdef LCEC_HAVE_GUARD
+    lcec_delete_guard(master);
+#endif
     lcec_uspace_deactivate(master);
 #else
     ecrt_master_deactivate(master->master);
@@ -719,6 +890,11 @@ void rtapi_app_exit(void) {
   }
 
   lcec_clear_config();
+#ifdef LCEC_HAVE_GUARD
+  if (lcec_guard_module >= 0) {
+    rtapi_exit(lcec_guard_module);
+  }
+#endif
   hal_exit(lcec_comp_id);
 }
 
@@ -1792,6 +1968,9 @@ void lcec_write_master(void *arg, long period) {
   ref = rtapi_task_pll_get_reference();
 #endif
 
+#ifdef LCEC_HAVE_GUARD
+  lcec_guard_resumed(master);
+#endif
   lcec_take_down(master);
 
   // send process data
@@ -1824,6 +2003,9 @@ void lcec_write_master(void *arg, long period) {
 
   // send domain data
   ecrt_master_send(master->master);
+#ifdef LCEC_HAVE_GUARD
+  __atomic_store_n(&master->last_cycle, rtapi_get_time(), __ATOMIC_RELEASE);
+#endif
   rtapi_mutex_give(&master->mutex);
 
 #ifdef RTAPI_TASK_PLL_SUPPORT

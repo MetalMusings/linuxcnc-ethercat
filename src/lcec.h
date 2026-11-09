@@ -83,6 +83,14 @@ extern "C" {
 // State update period (ns)
 #define LCEC_STATE_UPDATE_PERIOD 1000000000LL
 
+// The stop guard (userspace master): see lcec_guard_tick() in lcec_main.c.
+#define LCEC_GUARD_IDLE 0     ///< the servo thread runs the bus
+#define LCEC_GUARD_TAKING 1   ///< the servo thread stopped; the guard takes the slaves to PREOP
+#define LCEC_GUARD_DONE 2     ///< the slaves are in PREOP, or the guard gave up
+#define LCEC_GUARD_STOP_CYCLES 10    ///< cycles in a row without the servo thread before the guard stops the bus
+#define LCEC_GUARD_TIMEOUT 1000000000LL  ///< longest take-over (ns)
+
+
 // IDN builder
 #define LCEC_IDN_TYPE_P 0x8000
 #define LCEC_IDN_TYPE_S 0x0000
@@ -192,6 +200,8 @@ typedef struct lcec_master_data {
   hal_bit_t *all_op;
   hal_bit_t *dc_sync_failed;       ///< A slave's DC sync check timed out (userspace master only).
   hal_bit_t *take_down;            ///< In: zero all outputs and take the slaves to PREOP (orderly stop).
+  hal_s32_t *guard_state;          ///< The stop guard: 0 the servo thread runs, 1 taking the slaves to PREOP, 2 done.
+  hal_u32_t *guard_cycles;         ///< Cycles the stop guard sent because the servo thread was late or stopped.
 #ifdef RTAPI_TASK_PLL_SUPPORT
   hal_s32_t *pll_err;
   hal_s32_t *pll_out;
@@ -245,6 +255,11 @@ typedef struct lcec_master {
   int auto_shift;                   ///< globalShiftTime="auto": global_shift_time is chosen at run time.
   int dc_sync_failed;               ///< A slave's DC sync check timed out (see ec_slave_config_state_t).
   int taking_down;                  ///< take-down was set in the last cycle.
+  long long last_cycle;             ///< Userspace master: rtapi_get_time() at the end of the last write (atomic).
+  int guard_task;                   ///< Userspace master: the stop guard's RTAPI task, or -1.
+  int guard_state;                  ///< Userspace master: LCEC_GUARD_* (atomic).
+  long long guard_start;            ///< When the stop guard took over (ns).
+  int guard_missed;                 ///< Cycles in a row the stop guard sent for the servo thread.
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)

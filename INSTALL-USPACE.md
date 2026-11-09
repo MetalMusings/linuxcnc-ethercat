@@ -62,21 +62,17 @@ loadrt lcec_uspace
 
 Nothing else changes: pins and functions keep their `lcec.` names.
 
-For an orderly stop, add this line to the HAL file named by `SHUTDOWN` in
-the `[HAL]` section of the INI file (create one if there is none:
-`SHUTDOWN = shutdown.hal`):
-
-```
-loadusr -w lcec-take-down
-```
-
-LinuxCNC runs that file before it stops its threads. `lcec-take-down`
-sets the pin `lcec.take-down`: every output becomes zero and the slaves go
-to PREOP while process data still flows. Without it, the slaves lose
-their process data in OP when LinuxCNC stops, and stop with an error
-(sync manager watchdog 0x001B, synchronization error 0x001A); CiA 402
-drives also latch a communication fault (such as 0x7500) that must be
-reset before they run again.
+When LinuxCNC stops, `lcec_uspace` stops the bus in order by itself:
+every output becomes zero and the slaves go to PREOP while process data
+still flows. Without that, the slaves would lose their process data in
+OP and stop with an error (sync manager watchdog 0x001B, synchronization
+error 0x001A), and CiA 402 drives would latch a communication fault (such
+as 0x7500) that must be reset before they run again. A stop guard, a
+realtime task beside the servo thread, sends the process data when
+`lcec.write-all` is late, and takes the slaves down after 10 cycles
+without the servo thread; `lcec.0.guard-state` and `lcec.0.guard-cycles`
+show it. `lcec.take-down`, set by `lcec-take-down`, does the same on
+request.
 
 ## 5. Run
 
