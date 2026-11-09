@@ -3,8 +3,9 @@
 Measurements of `lcec_uspace`, the driver built against the userspace
 IgH master (see [README](../README.md#userspace-ethercat-master-lcec_uspace)),
 compared with `lcec` and the kernel master, and of the system tuning
-that matters for it. All tests were made on one machine in November
-2026, and each case was run once.
+that matters for it. The tests were made in November 2026 on one
+machine, and those of section 1 also on a second; each case was run
+once.
 
 ## Summary
 
@@ -13,7 +14,9 @@ that matters for it. All tests were made on one machine in November
   under load the longest cycle was 63 µs, against 313 µs with the
   default `raw` transport and 664 µs with the kernel master. The long
   cycles of `raw` and the kernel master are in the receive
-  (`lcec.read-all`).
+  (`lcec.read-all`). On a second machine, which had no such long cycles
+  with any master, `xdp-native` still had the shortest mean and p99,
+  20–60 % below the others.
 - **CPU governor and NIC interrupt placement** made no clear
   difference.
 - **`isolcpus`** for the CPU that runs the servo thread matters once a
@@ -81,6 +84,56 @@ thread, µs:
 - The DC synchronization was the same with all three: `pll-err` was
   0.5 µs on average idle and about 2 µs under load, at most 31–37 µs.
 - All slaves stayed in OP in every cycle of every run.
+
+### A second machine
+
+The same tests on another machine and bus, to see whether `xdp-native`
+is ahead there too:
+
+- Intel Core i3-7100 (2 cores, no SMT), Debian 13, PREEMPT_RT 6.12.74,
+  LinuxCNC 2.9.4 (uspace).
+- Kernel command line: `acpi_mask_gpe=0x6F i915.enable_dc=0
+  irqaffinity=0`. Without the first two, an ACPI GPE interrupt storm and
+  the i915 display power states gave cycles of about 300 µs on this
+  machine, with any master. No `isolcpus`; the servo thread runs on
+  CPU 1.
+- EtherCAT on an Intel I210 (`igb`), with the driver's default interrupt
+  coalescing. The kernel master uses the `ec_generic` driver.
+- Bus: EK1100, EL1008, EL2008, EL5101 and two ECT60V202 drives with
+  distributed clocks; the drives were not enabled.
+- Times from TSC clocks at 3912 MHz. The same load command as above.
+
+**500 µs**, 180 s per run. Execution time of the servo thread, µs:
+
+| | mean | p99 | p99.9 | max | cycles > 100 µs |
+|---|---|---|---|---|---|
+| kernel master (`lcec`), idle | 7.2 | 9.2 | 15.0 | 77 | 0 |
+| userspace, `raw`, idle | 4.8 | 6.7 | 12.5 | 37 | 0 |
+| userspace, `xdp-native`, idle | 2.9 | 4.4 | 10.0 | 33 | 0 |
+| kernel master (`lcec`), with load | 13.2 | 26.8 | 32.0 | 52 | 0 |
+| userspace, `raw`, with load | 10.4 | 23.3 | 28.8 | 46 | 0 |
+| userspace, `xdp-native`, with load | 7.6 | 18.3 | 23.7 | 44 | 0 |
+
+**1 ms, idle**, 180 s per run. Mean, p99.9 and longest cycle: 7.7, 17.1
+and 36 µs (kernel); 5.3, 19.5 and 71 µs (`raw`); 3.1, 11.5 and 28 µs
+(`xdp-native`).
+
+- `xdp-native` again has the shortest cycles. Its mean is 60 % below
+  the kernel master's and 40 % below `raw`'s idle, and 42 % and 27 % below
+  under load. The longest receive (`lcec.read-all`) was 6 µs idle and 14 µs
+  under load with `xdp-native`, against 12 and 21 µs with `raw` and 17
+  and 22 µs with the kernel master.
+- This machine had none of the long cycles that the first machine had
+  with `raw` and the kernel master: no cycle over 100 µs with any master.
+  The difference in the longest cycle is therefore small here.
+- `pll-err` was 0.5 µs on average idle and 1.5 µs under load with all
+  three masters, at most 15–68 µs.
+- All slaves stayed in OP in every cycle of every run.
+- `lcec_uspace`'s DC loop only locks when the XML file's
+  `appTimePeriod` is the servo thread's period; with 1 ms in the file
+  and a 500 µs thread, `pll-err` wandered over the whole period. The
+  kernel master's `lcec` locked either way. The file was set to the
+  thread's period for all runs.
 
 ## 2. CPU governor and NIC interrupts
 
@@ -223,9 +276,9 @@ For `lcec_uspace` on a machine like this:
 
 ## Limits of these tests
 
-- One machine and one run per case. Single long cycles (such as the
-  287 µs with `performance` and IRQ 3 in 2) may come from rare events that a second run would
-  not show.
+- One run per case, and one machine except for section 1. Single long
+  cycles (such as the 287 µs with `performance` and IRQ 3 in 2) may come
+  from rare events that a second run would not show.
 - The drives were not enabled, so no motor current or real motion.
 - `stress-ng` is a harsher load than a typical plasma cutter's PC sees,
   but a GUI with a large preview, a web browser or a file copy loads
