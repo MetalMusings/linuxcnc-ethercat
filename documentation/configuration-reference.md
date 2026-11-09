@@ -68,7 +68,9 @@ and some of which are required:
 - `globalShiftTime="<ns>"`: (optional, default 0) time from the nominal
   start of the servo thread period to DC SYNC0 for all slaves on this
   master. It must be less than `appTimePeriod`. It should be larger than the time
-  until lcec's `write` has sent the frame. See
+  until lcec's `write` has sent the frame. `globalShiftTime="auto"` lets
+  lcec choose it, so that the turn-around time is the same in every
+  cycle; it needs `syncToRefClock`. See
   [distributed-clocks.md](distributed-clocks.md).
 - `interface="<name>"`: (optional, only used by `lcec_uspace`) the
   network interface of the EtherCAT bus for the userspace master, for

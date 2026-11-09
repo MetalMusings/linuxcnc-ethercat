@@ -306,9 +306,14 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
     // parse globalShiftTime
     if (strcmp(name, "globalShiftTime") == 0) {
       char *end;
-      long long v = strtoll(val, &end, 10);
+      long long v;
+      if (strcasecmp(val, "auto") == 0) {
+        p->autoShift = 1;
+        continue;
+      }
+      v = strtoll(val, &end, 10);
       if (*val == 0 || *end != 0 || v < 0 || v > 0xffffffffLL) {
-        fprintf(stderr, "%s: ERROR: Invalid globalShiftTime \"%s\", must be a non-negative number of ns\n", modname, val);
+        fprintf(stderr, "%s: ERROR: Invalid globalShiftTime \"%s\", must be a non-negative number of ns, or auto\n", modname, val);
         XML_StopParser(inst->parser, 0);
         return;
       }
@@ -332,6 +337,14 @@ static void parseMasterAttrs(LCEC_CONF_XML_INST_T *inst, int next, const char **
     fprintf(stderr, "%s: INFO: %s servo-thread with DC reference clock\n", modname, p->syncToRefClock ? "Synchronising" : "Not synchronising");
   }
   
+  // globalShiftTime="auto" moves SYNC0 against the servo thread at run time,
+  // which only the thread's PLL can do
+  if (p->autoShift && !p->syncToRefClock) {
+    fprintf(stderr, "%s: ERROR: globalShiftTime=\"auto\" needs syncToRefClock=\"true\" (or a negative refClockSyncCycles)\n", modname);
+    XML_StopParser(inst->parser, 0);
+    return;
+  }
+
   // globalShiftTime is a position within one servo thread period
   if (p->appTimePeriod > 0 && p->globalShiftTime >= p->appTimePeriod) {
     fprintf(stderr, "%s: ERROR: globalShiftTime (%u) must be less than appTimePeriod (%u)\n", modname, p->globalShiftTime, p->appTimePeriod);

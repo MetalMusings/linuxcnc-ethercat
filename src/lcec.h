@@ -29,6 +29,7 @@ extern "C" {
 #include "ecrt.h"
 #include "hal.h"
 #include "lcec_conf.h"
+#include "lcec_autoshift.h"
 
 /// HAL component name. halcmd requires it to match the module file name, so the
 /// build against the userspace EtherCAT master (lcec_uspace.so) registers as
@@ -199,6 +200,10 @@ typedef struct lcec_master_data {
   hal_bit_t *dc_phased;            // DC phase synchronization status
   hal_s32_t *send_offset;          ///< Time from nominal thread start to the app time sample before sending (ns).
   hal_s32_t send_offset_max;        ///< Max of send_offset while DC is running; write 0 to reset.
+  hal_u32_t *shift_time;           ///< The globalShiftTime in use (ns).
+  hal_s32_t *turnaround_cycles;    ///< globalShiftTime="auto": 0 waiting or measuring, 2 or 3 cycles.
+  hal_u32_t auto_shift_margin;     ///< globalShiftTime="auto": ns kept between a frame and SYNC0.
+  hal_u32_t auto_shift_input_margin; ///< globalShiftTime="auto": ns from SYNC0 until the slaves' inputs are ready.
 #endif
 } lcec_master_data_t;
 
@@ -234,6 +239,7 @@ typedef struct lcec_master {
   int sync_ref_cycles;
   int sync_to_ref_clock;
   uint32_t global_shift_time;       ///< SYNC0 offset from the nominal servo thread start (ns).
+  int auto_shift;                   ///< globalShiftTime="auto": global_shift_time is chosen at run time.
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
@@ -246,6 +252,7 @@ typedef struct lcec_master {
   int64_t dc_app_offset;            ///< Unwrapped 64-bit offset between DC reference clock time and app time.
   int dc_app_offset_valid;          ///< dc_app_offset has been initialized.
   int dc_time_valid_last;
+  lcec_autoshift_t autoshift;       ///< globalShiftTime="auto"
 #endif
 } lcec_master_t;
 

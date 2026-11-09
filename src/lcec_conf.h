@@ -75,6 +75,7 @@ typedef struct {
   int refClockSyncCycles;
   int syncToRefClock;
   uint32_t globalShiftTime;  ///< SYNC0 offset from the nominal servo thread start (ns), applied to all DC slaves.
+  int autoShift;             ///< globalShiftTime="auto": lcec chooses and keeps adjusting it (see lcec_autoshift.h).
   char name[LCEC_CONF_STR_MAXLEN];
   char interface[LCEC_CONF_STR_MAXLEN];  ///< Network interface for the userspace master (lcec_uspace); empty if not given.
   char transport[LCEC_CONF_STR_MAXLEN];  ///< Transport for the userspace master (lcec_uspace), such as raw; empty if not given.

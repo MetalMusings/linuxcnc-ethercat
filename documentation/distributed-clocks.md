@@ -109,7 +109,8 @@ during program execution, etc.) and read `send-offset-max`. A starting point is:
 globalShiftTime = send-offset-max + transmit delay (~20-50 us) + slave margin (0x1C32:06, or ~50 us)
 ```
 
-Round it up generously. With a 1 ms period, 250-400 us is
+Round it up generously, or let lcec choose it (`globalShiftTime="auto"`,
+below). With a 1 ms period, 250-400 us is
 a reasonable range on a typical PREEMPT_RT PC. A larger value is safer but
 delays the outputs: they take effect `globalShiftTime` after the start of the
 servo thread period. With `globalShiftTime="0"`, SYNC0 fires at the start
@@ -123,6 +124,77 @@ of the thread period. The outputs written in that period are then used one perio
   its nominal start keeps the phase described above. Large initial phase
   errors are pulled in at `pll-step` per cycle. With the default settings,
   that is at most about 500 cycles.
+
+### `globalShiftTime="auto"`
+
+The turn-around time is the time from an output written in one servo
+cycle until the slave's answer to it is read back. It is two cycles when
+SYNC0 falls after the cycle's frame has reached the slaves, and three
+when SYNC0 falls before it, as the outputs then wait for the next
+SYNC0. When the frame is sent close to SYNC0, the count changes from
+cycle to cycle with the servo thread's latency, and that, not the delay
+itself, upsets drives and control loops. On one test machine (I210 NIC,
+1 ms), `globalShiftTime="0"` gave two cycles about 40% of the time and
+three the rest; 100 us or more gave two cycles every time.
+
+With `globalShiftTime="auto"` (and `syncToRefClock="true"`), lcec
+places SYNC0 itself:
+
+1. It starts with SYNC0 in the middle of the period.
+2. When all slaves are in OP and `dc-phased` is true, it measures
+   `send-offset` for 2 seconds.
+3. It chooses where the turn-around is always two cycles: after every
+   frame by at least `auto-shift-margin`, and at least
+   `auto-shift-input-margin` before the next frame, so that the slaves'
+   inputs are ready:
+
+   ```
+   send-offset max + margin  <=  shift  <=  period + send-offset min - input margin
+   ```
+
+   If that window is empty, it chooses where the turn-around is always
+   three cycles, before every frame by at least `auto-shift-margin`:
+
+   ```
+   send-offset max + margin - period  <=  shift  <=  send-offset min - margin
+   ```
+
+   It takes the middle of the window, the farthest from both edges. The
+   shift is the position within the period (modulo the period).
+4. It keeps watching `send-offset`. When a frame comes later or earlier
+   than any before, so that SYNC0 has less than half the margins left, it
+   chooses again from all it has seen.
+
+A new shift moves the servo thread against SYNC0 through the PLL,
+`pll-step` per cycle, as at start-up: 100 us takes 100 cycles with the
+default step. SYNC0 itself does not move in the slaves' time; only the
+time at which the frames arrive does. The windows above use only the
+send times, since the transmit delay is in both the frame and SYNC0.
+
+If neither window fits (the send time varies by nearly a whole period),
+lcec still takes the middle of the three-cycle window and logs an error.
+Look at the servo thread's latency then.
+
+The slaves' own `sync0Shift` is added on top, as for a fixed
+`globalShiftTime`; keep it 0 with `auto`.
+
+Pins and parameters for `auto`:
+
+- `shift-time` OUT. The `globalShiftTime` in use, in ns.
+- `turnaround-cycles` OUT. 2 or 3 once chosen; 0 while waiting for the
+  bus or measuring.
+- `auto-shift-margin` RW. Time kept between a frame and SYNC0, in ns.
+  Default 50000. It covers the time the slaves need for the outputs
+  before SYNC0 (0x1C32:06, calc and copy time), the frame's time along
+  the bus, and the jitter of the transmit delay.
+- `auto-shift-input-margin` RW. Time from SYNC0 until the slaves' inputs
+  are ready for the next frame, in ns. Default 50000 (0x1C33:06, calc
+  and copy time of the inputs).
+
+Each choice is logged with the measured `send-offset` range, the shift
+and the turn-around.
+
+### PLL
 
 Synchronization is done with a bang-bang controller. Four hal parameters
 and five hal pins are available.
