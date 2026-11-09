@@ -1,5 +1,12 @@
 # Trying the userspace EtherCAT master (lcec_uspace)
 
+**Frozen (2026-11-10).** `lcec_uspace` gets no further changes. Its
+successor is [ecat](https://github.com/MetalMusings/ecat), a HAL component
+and a setup program built on the same userspace master, which imports
+lcec XML files. The userspace master itself is still developed, in
+[MetalMusings/ethercat](https://github.com/MetalMusings/ethercat), and its
+package is for now still built from this repository.
+
 `lcec_uspace` runs the EtherCAT master inside LinuxCNC, without a kernel
 module. It is experimental: try it with the machine unable to do harm.
 More about it in [README.md](README.md#userspace-ethercat-master-lcec_uspace).
