@@ -62,6 +62,22 @@ loadrt lcec_uspace
 
 Nothing else changes: pins and functions keep their `lcec.` names.
 
+For an orderly stop, add this line to the HAL file named by `SHUTDOWN` in
+the `[HAL]` section of the INI file (create one if there is none:
+`SHUTDOWN = shutdown.hal`):
+
+```
+loadusr -w lcec-take-down
+```
+
+LinuxCNC runs that file before it stops its threads. `lcec-take-down`
+sets the pin `lcec.take-down`: every output becomes zero and the slaves go
+to PREOP while process data still flows. Without it, the slaves lose
+their process data in OP when LinuxCNC stops, and stop with an error
+(sync manager watchdog 0x001B, synchronization error 0x001A); CiA 402
+drives also latch a communication fault (such as 0x7500) that must be
+reset before they run again.
+
 ## 5. Run
 
 Start LinuxCNC with the copy. The `ethercat-uspace` tool works while it

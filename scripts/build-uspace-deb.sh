@@ -99,6 +99,9 @@ install -m 644 "$MASTER_ROOT$PREFIX"/include/*.h "$ROOT$PREFIX/include/"
 strip --strip-unneeded "$ROOT$PREFIX"/bin/* "$ROOT$PREFIX"/lib/libethercat.so.2.* \
     "$ROOT$PREFIX"/lib/linuxcnc/modules/lcec_uspace.so
 ln -s $PREFIX/bin/ethercat "$ROOT/usr/bin/ethercat-uspace"
+# For [HAL]SHUTDOWN: an orderly stop of the bus before the threads stop.
+install -m 755 "$WORK/lcec/scripts/lcec-take-down" "$ROOT$PREFIX/bin/"
+ln -s $PREFIX/bin/lcec-take-down "$ROOT/usr/bin/lcec-take-down"
 
 cat >"$ROOT$PREFIX/etc/ethercat-uspace.conf" <<EOF
 # Settings for "sudo ethercat-uspace start", the free-running master that the

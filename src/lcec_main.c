@@ -44,6 +44,7 @@ static const lcec_pindesc_t master_global_pins[] = {
     {HAL_BIT, HAL_OUT, offsetof(lcec_master_data_t, link_up), "%s.link-up"},
     {HAL_BIT, HAL_OUT, offsetof(lcec_master_data_t, all_op), "%s.all-op"},
     {HAL_BIT, HAL_OUT, offsetof(lcec_master_data_t, dc_sync_failed), "%s.dc-sync-failed"},
+    {HAL_BIT, HAL_IN, offsetof(lcec_master_data_t, take_down), "%s.take-down"},
     {HAL_TYPE_UNSPECIFIED, HAL_DIR_UNSPECIFIED, -1, NULL},
 };
 
@@ -1731,6 +1732,37 @@ static void lcec_update_dc_phase(lcec_master_t *master, int dc_time_valid, uint3
 }
 #endif
 
+/// @brief An orderly stop: while lcec.take-down (or lcec.<master>.take-down)
+/// is set, every output is zero and the slaves are taken to PREOP, with
+/// process data still exchanged in every cycle. Slaves that instead lose
+/// their process data in SAFEOP or OP stop with an error (sync manager
+/// watchdog, synchronization error), and CiA 402 drives latch a
+/// communication fault. Set it before the servo thread stops, and wait until
+/// no slave is above PREOP (the state-safeop and state-op pins):
+/// lcec-take-down does both, from [HAL]SHUTDOWN. Clearing it takes the
+/// slaves back to OP. Taking the slaves to PREOP needs the userspace master
+/// (EC_HAVE_REQUEST_AL_STATE); otherwise only the outputs are zero.
+static void lcec_take_down(lcec_master_t *master) {
+  int take = *(global_hal_data->take_down) || *(master->hal_data->take_down);
+
+  if (take != master->taking_down) {
+    master->taking_down = take;
+#ifdef EC_HAVE_REQUEST_AL_STATE
+    ecrt_master_request_al_state(master->master, take ? EC_AL_STATE_PREOP : EC_AL_STATE_OP);
+    rtapi_print_msg(RTAPI_MSG_INFO, LCEC_MSG_PFX "master %s: %s\n", master->name,
+        take ? "take-down: outputs zero, slaves to PREOP" : "take-down cleared: slaves to OP");
+#else
+    if (take) {
+      rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: take-down: outputs zero; this master cannot take the slaves to PREOP\n",
+          master->name);
+    }
+#endif
+  }
+  if (take && master->process_data != NULL) {
+    memset(master->process_data, 0, master->process_data_len);
+  }
+}
+
 /// @brief Write all output pins on a master and its slaves.
 void lcec_write_master(void *arg, long period) {
   lcec_master_t *master = (lcec_master_t *)arg;
@@ -1759,6 +1791,8 @@ void lcec_write_master(void *arg, long period) {
   // nominal start time of the current servo thread period
   ref = rtapi_task_pll_get_reference();
 #endif
+
+  lcec_take_down(master);
 
   // send process data
   rtapi_mutex_get(&master->mutex);

@@ -191,6 +191,7 @@ typedef struct lcec_master_data {
   hal_bit_t *link_up;
   hal_bit_t *all_op;
   hal_bit_t *dc_sync_failed;       ///< A slave's DC sync check timed out (userspace master only).
+  hal_bit_t *take_down;            ///< In: zero all outputs and take the slaves to PREOP (orderly stop).
 #ifdef RTAPI_TASK_PLL_SUPPORT
   hal_s32_t *pll_err;
   hal_s32_t *pll_out;
@@ -243,6 +244,7 @@ typedef struct lcec_master {
   uint32_t global_shift_time;       ///< SYNC0 offset from the nominal servo thread start (ns).
   int auto_shift;                   ///< globalShiftTime="auto": global_shift_time is chosen at run time.
   int dc_sync_failed;               ///< A slave's DC sync check timed out (see ec_slave_config_state_t).
+  int taking_down;                  ///< take-down was set in the last cycle.
   long long state_update_timer;
   ec_master_state_t ms;
   int activated;                    // Flag: master has been activated (0=not yet, 1=activated)
