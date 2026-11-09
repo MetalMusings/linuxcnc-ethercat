@@ -131,6 +131,8 @@ static void sigsegv_handler(int sig);
 #include <grp.h>
 #include <signal.h>
 #include <stdio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/file.h>
 #include <stdlib.h>
 #include <string.h>
@@ -153,6 +155,29 @@ static const char *lcec_uspace_socket_path(void) {
     return NULL;
   }
   return path;
+}
+
+/// @brief Whether another master already serves the ethercat tool on the socket.
+///
+/// After the handover (lcec_uspace_take_interface) a master that still answers
+/// runs on another network interface. Its socket must be left alone: taken
+/// over, that master could no longer be reached by the tool.
+static int lcec_uspace_socket_served(const char *path) {
+  struct sockaddr_un addr;
+  int fd, served;
+
+  if (path == NULL || strlen(path) >= sizeof(addr.sun_path)) {
+    return 0;
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  memcpy(addr.sun_path, path, strlen(path) + 1);
+  if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0) {
+    return 0;
+  }
+  served = connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+  close(fd);
+  return served;
 }
 
 /// @brief Give the LinuxCNC user (and LCEC_ETHERCAT_SOCKET_GROUP) the socket.
@@ -287,6 +312,11 @@ static ec_master_t *lcec_request_master(lcec_master_t *master) {
     if (lcec_uspace_take_interface(interface) < 0) {
       setfsuid(user);
       return NULL;
+    }
+    if (lcec_uspace_socket_served(socket_path)) {
+      rtapi_print_msg(RTAPI_MSG_WARN, LCEC_MSG_PFX
+          "userspace master: another master serves the ethercat tool on %s; this one runs without it\n", socket_path);
+      socket_path = NULL;
     }
     int ret = ecrt_lib_init(NULL, socket_path);
     if (ret >= 0 && socket_path != NULL) {
