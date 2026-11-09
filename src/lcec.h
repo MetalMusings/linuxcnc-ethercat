@@ -258,6 +258,7 @@ typedef struct lcec_master {
   long long last_cycle;             ///< Userspace master: rtapi_get_time() at the end of the last write (atomic).
   int guard_task;                   ///< Userspace master: the stop guard's RTAPI task, or -1.
   int guard_state;                  ///< Userspace master: LCEC_GUARD_* (atomic).
+  int guard_started;                ///< Userspace master: the stop guard's task was started.
   long long guard_start;            ///< When the stop guard took over (ns).
   int guard_missed;                 ///< Cycles in a row the stop guard sent for the servo thread.
   long long state_update_timer;

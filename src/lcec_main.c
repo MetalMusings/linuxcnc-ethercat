@@ -518,6 +518,8 @@ static void lcec_start_guard(lcec_master_t *master) {
   ret = rtapi_task_start(master->guard_task, master->app_time_period);
   if (ret != 0) {
     rtapi_print_msg(RTAPI_MSG_ERR, LCEC_MSG_PFX "master %s: stop guard not started (%d)\n", master->name, ret);
+  } else {
+    master->guard_started = 1;
   }
 }
 
@@ -531,11 +533,15 @@ static void lcec_delete_guard(lcec_master_t *master) {
          __atomic_load_n(&master->guard_state, __ATOMIC_ACQUIRE) != LCEC_GUARD_DONE && rtapi_get_time() < end) {
     nanosleep(&tick, NULL);
   }
-  if (master->guard_task >= 0) {
+  // a task that never started (the component unloaded before the servo
+  // thread ran, such as after an error in a later HAL file) has no thread:
+  // rtapi_task_delete() would cancel a thread that does not exist
+  if (master->guard_task >= 0 && master->guard_started) {
     rtapi_task_pause(master->guard_task);
     rtapi_task_delete(master->guard_task);
-    master->guard_task = -1;
   }
+  master->guard_task = -1;
+  master->guard_started = 0;
 }
 
 /// In the servo thread: it runs, and the guard took over meanwhile (halcmd
