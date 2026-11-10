@@ -21,8 +21,9 @@ in 2023, and is the new home for most LinuxCNC EtherCAT development.
 > on the same userspace master, without XML files (lcec XML files can be
 > imported). `lcec_uspace` here is frozen. The userspace master
 > ([MetalMusings/ethercat](https://github.com/MetalMusings/ethercat)) is
-> still developed, and its package `linuxcnc-ethercat-uspace` is for now
-> still built from this repository.
+> still developed, and its package `linuxcnc-ethercat-uspace` is built
+> there from 1.1 on, without `lcec_uspace`. The `uspace-v*` releases here
+> (up to 1.0) are the last with `lcec_uspace`.
 
 This version lets you choose between two EtherCAT masters: IgH's
 kernel-mode master, loaded as `lcec` as before, or a userspace master
@@ -122,7 +123,9 @@ successor is [ecat](https://github.com/MetalMusings/ecat), a HAL component
 and a setup program built on the same userspace master, which imports
 lcec XML files. The userspace master itself is still developed, in
 [MetalMusings/ethercat](https://github.com/MetalMusings/ethercat), and its
-package is for now still built from this repository.
+package is built there from 1.1 on, without `lcec_uspace`. To run
+`lcec_uspace`, use the `uspace-v1.0` (or older) package from this
+repository's releases; installing 1.1 over it removes `lcec_uspace`.
 
 `lcec_uspace` is this driver built against a userspace build of the
 IgH EtherCAT master,

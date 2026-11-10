@@ -5,7 +5,9 @@ successor is [ecat](https://github.com/MetalMusings/ecat), a HAL component
 and a setup program built on the same userspace master, which imports
 lcec XML files. The userspace master itself is still developed, in
 [MetalMusings/ethercat](https://github.com/MetalMusings/ethercat), and its
-package is for now still built from this repository.
+package is built there from 1.1 on, without `lcec_uspace`. To run
+`lcec_uspace`, use the `uspace-v1.0` (or older) package from this
+repository's releases; installing 1.1 over it removes `lcec_uspace`.
 
 `lcec_uspace` runs the EtherCAT master inside LinuxCNC, without a kernel
 module. It is experimental: try it with the machine unable to do harm.

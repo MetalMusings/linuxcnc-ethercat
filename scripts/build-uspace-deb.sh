@@ -4,6 +4,10 @@
 # lcec_uspace, installed in /opt/linuxcnc-ethercat-uspace, apart from the
 # system and from an installed kernel master and lcec. See INSTALL-USPACE.md.
 #
+# Kept for the frozen lcec_uspace (packages up to 1.0). From 1.1 the package
+# holds the master only and is built in MetalMusings/ethercat
+# (packaging/linuxcnc/build-deb.sh).
+#
 # Usage: scripts/build-uspace-deb.sh [-m <master source>] [-b <branch>] [-o <dir>]
 #
 #   -m  the userspace master (MetalMusings/ethercat): a git URL, or a local git
